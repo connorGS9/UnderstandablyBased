@@ -13,6 +13,7 @@ const LANG_COLORS = ['var(--role-controller)', 'var(--role-service)', 'var(--rol
 export function Overview() {
   const summary = useStore((s) => s.summary)!;
   const openEntry = useStore((s) => s.openEntry);
+  const traceFrom = useStore((s) => s.traceFrom);
   const setView = useStore((s) => s.setView);
   const setDiagramTab = useStore((s) => s.setDiagramTab);
   const { profile, stats, entries } = summary;
@@ -38,7 +39,12 @@ export function Overview() {
     `project:${summary.root}`,
   );
 
-  const startHere: EntryPoint[] = [...processes.slice(0, 2), ...routes.filter((r) => r.handlerId).slice(0, 6), ...pages.slice(0, 3), ...channels.slice(0, 3), ...jobs.slice(0, 2)].slice(0, 10);
+  // Most central first: key entry points, never members of a family of look-alikes.
+  const best = (list: EntryPoint[]) => [...list].filter((e) => e.insight?.tier !== 'routine').sort((a, b) => (b.insight?.score ?? 0) - (a.insight?.score ?? 0));
+  const startHere: EntryPoint[] = [...best(processes).slice(0, 2), ...best(routes.filter((r) => r.handlerId)).slice(0, 6), ...best(pages).slice(0, 3), ...channels.slice(0, 3), ...best(jobs).slice(0, 2)].slice(0, 10);
+  const families = summary.families ?? [];
+  const backbone = summary.backbone ?? [];
+  const keyCount = entries.filter((e) => e.insight?.tier === 'key').length;
 
   const entryRole = (e: EntryPoint): Role => (e.kind === 'http-route' ? 'route' : e.kind === 'page' ? 'page' : e.kind === 'channel' ? 'channel' : 'entry');
 
@@ -113,7 +119,7 @@ export function Overview() {
                     <span className="grow col" style={{ minWidth: 0 }}>
                       <span className="mono ellipsis">{e.kind === 'http-route' ? e.path : e.label}</span>
                       <span className="faint ellipsis" style={{ fontSize: 11 }}>
-                        {e.handlerName ?? e.framework}
+                        {e.insight?.tier === 'key' ? e.insight.reasons.slice(0, 2).join(' · ') : e.insight?.gist ?? e.handlerName ?? e.framework}
                       </span>
                     </span>
                   </button>
@@ -129,6 +135,51 @@ export function Overview() {
             </div>
           </section>
         </div>
+
+        {(families.length > 0 || backbone.length > 0) && (
+          <section className="card" style={{ marginTop: 12 }}>
+            <h3>The shape of it</h3>
+            <p className="dim" style={{ marginTop: 0, fontSize: 12.5 }}>
+              {keyCount > 0 && <>{keyCount} entry points stand out as key; they are listed first in Explore. </>}
+              {families.length > 0 && (
+                <>
+                  {families.reduce((n, f) => n + f.members.length, 0)} more follow a handful of repeated patterns. Learn one member of a family and you know the rest; each still has its own one-line summary in Explore.
+                </>
+              )}
+            </p>
+            <div className="cards" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', marginTop: 0 }}>
+              {families.length > 0 && (
+                <div>
+                  <div className="faint" style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', marginBottom: 6 }}>Repeated patterns</div>
+                  <div className="col" style={{ gap: 4 }}>
+                    {families.slice(0, 8).map((f) => (
+                      <button key={f.id} className="start-item" title={f.explain} onClick={() => f.shared[0] && traceFrom(f.shared[0].id, f.shared[0].name, 'service')}>
+                        <span className="pill">{f.members.length}</span>
+                        <span className="grow mono ellipsis" style={{ fontSize: 12 }}>{f.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {backbone.length > 0 && (
+                <div>
+                  <div className="faint" style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', marginBottom: 6 }} title="Code that most entry points pass through. Changing it affects nearly everything.">
+                    Code most requests pass through
+                  </div>
+                  <div className="col" style={{ gap: 4 }}>
+                    {backbone.slice(0, 6).map((b) => (
+                      <button key={b.kind + b.id} className="start-item" onClick={() => traceFrom(b.id, b.name, b.role)}>
+                        <RoleDot role={b.role} />
+                        <span className="grow mono ellipsis" style={{ fontSize: 12 }}>{b.name}</span>
+                        <span className="faint" style={{ fontSize: 11 }}>{Math.round(b.share * 100)}% of {b.kind === 'http-route' ? 'routes' : `${b.kind}s`}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </section>
+        )}
 
         <div className="cards" style={{ marginTop: 12 }}>
           <section className="card">

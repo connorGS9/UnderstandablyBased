@@ -41,7 +41,7 @@ const URL_RE = /^(https?|wss?|ipc|tcp|inproc|aeron|udp|unix):\/\//i;
 /** Keep only string literals that the analyzers care about, so facts stay small. */
 export function interestingString(s: string): boolean {
   if (s.length < 6 || s.length > 4000) return false;
-  return SQL_RE.test(s) || URL_RE.test(s);
+  return SQL_RE.test(s) || URL_RE.test(s) || s === 'text/event-stream';
 }
 
 interface Scope {
@@ -166,7 +166,7 @@ export class Collector {
       from: this.scopeId,
       callee,
       receiver: receiver ? truncate(receiver, 100) : undefined,
-      args: keep ? args : args.map((a) => ({ kind: a.kind, text: a.kind === 'ident' || a.kind === 'member' ? a.text : '', line: a.line })),
+      args: keep ? args : args.map((a) => ({ kind: a.kind, text: a.kind === 'ident' || a.kind === 'member' || a.key ? a.text : '', key: a.key, line: a.line })),
       range: rangeOf(n),
       nameRange: nameNode ? rangeOf(nameNode) : undefined,
       isNew: isNew || undefined,

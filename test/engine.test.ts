@@ -226,6 +226,28 @@ test('remix: flat routes, loaders run first, actions and resource routes', async
   assert.ok(reach(p.flow('http-route:POST /notes/:noteId', { depth: 4 })).includes('deleteNote'));
 });
 
+test('importance: key routes, families of look-alike routes, gists that tell them apart', async () => {
+  const p = await open('ai-app');
+  const ins = (path: string) => p.entries.find((e) => e.path === path)!.insight!;
+  const chat = ins('/chat/{conversation_id}/messages');
+  assert.equal(chat.tier, 'key');
+  assert.ok(chat.traits.includes('ai') && chat.traits.includes('stream'), chat.reasons.join('; '));
+  assert.equal(ins('/auth/login').tier, 'key');
+  assert.ok(ins('/auth/login').traits.includes('auth'));
+
+  const fams = p.summary.families.map((f) => `${f.label} (${f.members.length})`).sort();
+  assert.deepEqual(fams, ['/integrations/* via app/integrations/* (5)', '/tools/* via run_tool (8)']);
+  // Members stay recognizable: the gist says what each one adds, not what they all share
+  const weather = ins('/tools/get-weather');
+  assert.equal(weather.tier, 'routine');
+  assert.equal(weather.gist, '"get_weather"');
+  assert.ok(ins('/integrations/slack/sync').gist!.includes('sync_slack'));
+  assert.ok(ins('/integrations/slack/sync').gist!.includes('slack_items'));
+  // Key routes outrank routine ones; the tool runner is the family's code, not the app's backbone
+  assert.ok(chat.score > weather.score);
+  assert.ok(!p.summary.backbone.some((b) => b.name === 'run_tool'));
+});
+
 test('settings: excludes, role corrections, pinned entry points, project kind', async () => {
   const p = await Project.open(fixture('express-mini'), undefined, {
     settings: {

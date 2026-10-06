@@ -1,5 +1,6 @@
 import type { Arg, DbTable, EdgeKind, SinkEdge, SinkNode } from './types';
 import type { CodeGraph } from './graph';
+import { detectHttpCall } from './clientcalls';
 
 /**
  * Finds where code touches the outside world: database tables, HTTP services, IPC channels and
@@ -42,8 +43,6 @@ function sqlTables(sql: string): { table: string; kind: EdgeKind }[] {
   return out.filter((o) => !(o.kind === 'reads' && writes.has(o.table)));
 }
 
-const HTTP_CLIENT_RECV = /^(axios|got|ky|superagent|request|requests|httpx|aiohttp|urllib3|fetch|\$http|http|https|this\.http|this\.httpClient|httpClient|HttpClient|_httpClient|client|session|this\.client|restTemplate|this\.restTemplate|webClient|this\.webClient|_client|reqwest|api|this\.api|apiClient)$/;
-const HTTP_VERBS = /^(get|post|put|patch|delete|head|options|request|fetch|send|Get|Post|Put|Delete|Head|PostForm|GetAsync|PostAsync|PutAsync|DeleteAsync|PatchAsync|SendAsync|GetStringAsync|GetFromJsonAsync|PostAsJsonAsync|PutAsJsonAsync|getForObject|getForEntity|postForObject|postForEntity|exchange|retrieve|uri)$/;
 
 const MSG_SEND = /^(send|produce|publish|basicPublish|basic_publish|Publish|Produce|emit|xadd|lpush|rpush|sendMessage|send_message|convertAndSend|SendMessageAsync)$/;
 const MSG_RECV = /^(subscribe|Subscribe|consume|basicConsume|basic_consume|QueueSubscribe|psubscribe|xread|xreadgroup|blpop|brpop|receive|receiveMessage|ReceiveMessageAsync)$/;
@@ -87,8 +86,8 @@ function firstString(args: Arg[]): Arg | undefined {
 
 function urlLabel(raw: string): { id: string; label: string; detail: string } {
   const v = raw.replace(/\$\{[^}]*\}/g, '{…}').replace(/\{\{[^}]*\}\}/g, '{…}');
-  const m = /^(https?|wss?):\/\/([^/?#]+)(\/[^?#]*)?/i.exec(v);
-  if (m) return { id: `ext:${m[2].toLowerCase()}`, label: m[2], detail: v };
+  const m = /^(?:(?:https?|wss?):)?\/\/([^/?#]+)(\/[^?#]*)?/i.exec(v);
+  if (m) return { id: `ext:${m[1].toLowerCase()}`, label: m[1], detail: v };
   if (v.startsWith('/')) return { id: `ext:api${v.split('/').slice(0, 3).join('/')}`, label: `API ${v.split('/').slice(0, 3).join('/')}`, detail: v };
   return { id: `ext:${v.slice(0, 40)}`, label: v.slice(0, 40), detail: v };
 }
@@ -113,10 +112,11 @@ export function buildSinks(graph: CodeGraph, tables: DbTable[]): SinkIndex {
     if (!nodes.has(id)) nodes.set(id, { id, kind: 'table', label, detail: known ? `${known.columns.length} columns · ${known.source.kind}` : 'table referenced in a query' });
     return id;
   };
-  const addEdge = (from: string, to: string, kind: EdgeKind, file: string, line: number, detail?: string) => {
+  const addEdge = (from: string, to: string, kind: EdgeKind, file: string, line: number, detail?: string, http?: SinkEdge['http']) => {
     const list = edges.get(from) ?? [];
-    if (list.some((e) => e.to === to && e.kind === kind)) return;
-    list.push({ from, to, kind, file, line, detail });
+    // Several HTTP calls to one host stay separate: each may hit a different route.
+    if (list.some((e) => e.to === to && e.kind === kind && (!http || e.line === line))) return;
+    list.push({ from, to, kind, file, line, detail, http });
     edges.set(from, list);
   };
   const ownerOf = (scope: string, file: string, line: number): string | undefined => {
@@ -198,20 +198,13 @@ export function buildSinks(graph: CodeGraph, tables: DbTable[]): SinkIndex {
         }
       }
 
-      // HTTP
-      const isFetch = !recv && site.callee === 'fetch';
-      const isHttpLib = recv && HTTP_VERBS.test(site.callee) && (HTTP_CLIENT_RECV.test(recv) || /http|rest|webclient|client/i.test(last ?? ''));
-      const isGoHttp = recv === 'http' && /^(Get|Post|Head|PostForm|NewRequest|NewRequestWithContext)$/.test(site.callee);
-      const isCurl = site.callee === 'curl_easy_setopt' && site.args[1]?.text === 'CURLOPT_URL';
-      if (isFetch || isHttpLib || isGoHttp || isCurl) {
-        const urlArg = isGoHttp && site.callee.startsWith('NewRequest') ? site.args.find((a, i) => i >= 1 && a.kind === 'string') : isCurl ? site.args[2] : site.args[0];
-        if (urlArg?.kind === 'string' || isFetch || isGoHttp || /client|http|rest/i.test(recv)) {
-          const lbl = urlArg?.kind === 'string' && urlArg.value ? urlLabel(urlArg.value) : { id: `ext:${recv || 'http'}`, label: `HTTP via ${recv || site.callee}`, detail: urlArg?.text ?? '' };
-          // relative URLs from frontend code hit our own backend; label them as such
-          if (!nodes.has(lbl.id)) nodes.set(lbl.id, { id: lbl.id, kind: 'external', label: lbl.label, detail: lbl.detail });
-          addEdge(owner, lbl.id, 'http', file, line, `${site.callee.toUpperCase()} ${urlArg?.value ?? ''}`.trim());
-          continue;
-        }
+      // HTTP requests. Calls into this project's own routes are linked later (see linkHttpCalls).
+      const http = detectHttpCall(graph, file, f.lang, site);
+      if (http) {
+        const lbl = http.raw ? urlLabel(http.host ? `//${http.host}${http.path ?? ''}` : http.raw) : { id: `ext:${recv || site.callee}`, label: `HTTP via ${recv || site.callee}`, detail: '' };
+        if (!nodes.has(lbl.id)) nodes.set(lbl.id, { id: lbl.id, kind: 'external', label: lbl.label, detail: lbl.detail });
+        addEdge(owner, lbl.id, 'http', file, line, `${http.method ?? 'HTTP'} ${http.raw || ''}`.trim(), http);
+        continue;
       }
 
       // IPC: named shared memory, queues, pipes

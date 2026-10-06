@@ -33,7 +33,7 @@ export function field(n: Node | null | undefined, name: string): Node | null {
   return n ? n.childForFieldName(name) : null;
 }
 
-const KEEP_ARGS_CALLEE = /^(use|Use|route|Route|Mount|mount|nest|register|include_router|register_blueprint|add_url_rule|path|re_path|url|include|query|select|get|delete|update|insert|exec|execute|bind|connect|send|publish|subscribe|Group|group)$/;
+const KEEP_ARGS_CALLEE = /^(use|Use|route|Route|Mount|mount|nest|register|include_router|register_blueprint|add_url_rule|path|re_path|url|include|query|select|get|delete|update|insert|exec|execute|bind|connect|send|publish|subscribe|Group|group|fetch|\$fetch|ofetch|useFetch|useLazyFetch|useSWR|axios|ky|got|request|ajax|__request|post|put|patch|del|head|GET|POST|PUT|PATCH|DELETE|getJSON)$/;
 
 const SQL_RE = /\b(select\s[\s\S]*\sfrom|insert\s+into|update\s+\S+\s+set|delete\s+from|create\s+table|join\s)/i;
 const URL_RE = /^(https?|wss?|ipc|tcp|inproc|aeron|udp|unix):\/\//i;
@@ -159,7 +159,7 @@ export class Collector {
   addCall(n: Node, callee: string, receiver: string | undefined, args: Arg[], isNew = false, nameNode?: Node | null): CallSite {
     // Most calls (`foo(a, b)`) only need their argument count. Keep full arguments where an analyzer reads them:
     // literals (routes, SQL, URLs, channel names), inline callbacks, and router/ORM wiring calls.
-    const keep = KEEP_ARGS_CALLEE.test(callee) || args.some((a) => a.kind !== 'ident' && a.kind !== 'member' && a.kind !== 'number' && a.kind !== 'other');
+    const keep = KEEP_ARGS_CALLEE.test(callee) || args.some((a) => (a.kind !== 'ident' && a.kind !== 'member' && a.kind !== 'number' && a.kind !== 'other') || (a.kind === 'other' && /['"`]/.test(a.text)));
     const site: CallSite = {
       from: this.scopeId,
       callee,

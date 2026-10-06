@@ -9,6 +9,7 @@ import { buildSinks, type SinkIndex } from './sinks';
 import { extractEntries } from './routes';
 import { detectProfile } from './detect';
 import { buildDiagrams } from './diagrams';
+import { matchRoutes, routeTable } from './clientcalls';
 import { DEFAULT_SETTINGS } from './types';
 import type {
   CallRef,
@@ -111,6 +112,9 @@ export class Project {
   summary!: ProjectSummary;
   settings: ProjectSettings = DEFAULT_SETTINGS;
   private reach = new Map<string, Set<string>>();
+  /** HTTP calls in this project's code that hit this project's own routes: caller id -> links. */
+  private routeLinks = new Map<string, { entryId: string; line: number; confidence: Confidence; reason: string }[]>();
+  private linkedHttpCalls = 0;
   /** Inline callbacks created inside each scope (`onMounted(() => …)`, `.then(x => …)`), keyed by scope id. */
   private callbacks = new Map<string, { id: string; line: number; callee: string }[]>();
   private diagrams?: Diagrams;
@@ -268,6 +272,7 @@ export class Project {
     }
     this.entries.sort((a, b) => kindOrder(a.kind) - kindOrder(b.kind) || (a.path ?? a.label).localeCompare(b.path ?? b.label) || (a.method ?? '').localeCompare(b.method ?? ''));
     for (const e of this.entries) this.entryById.set(e.id, e);
+    this.linkHttpCalls();
     this.computeReach();
 
     const profile = detectProfile(this.graph, this.files, manifests, scan.extras, this.entries);
@@ -291,6 +296,7 @@ export class Project {
         calls: this.graph.stats.calls,
         resolvedCalls: this.graph.stats.resolved,
         lines,
+        linkedHttpCalls: this.linkedHttpCalls,
         tables: this.tables.length + [...this.sinks.nodes.values()].filter((n) => n.kind === 'table' && !this.tables.some((t) => t.name.toLowerCase() === n.label.toLowerCase())).length,
       },
       entries: this.entries,
@@ -323,6 +329,33 @@ export class Project {
       }
     }
     return out;
+  }
+
+  /** Replace "external API" leaves with links to the matching routes defined in this project. */
+  private linkHttpCalls() {
+    const routes = routeTable(this.entries);
+    if (!routes.length) return;
+    for (const [from, list] of this.sinks.edges) {
+      const keep = [];
+      for (const e of list) {
+        const m = e.http ? matchRoutes(e.http as Parameters<typeof matchRoutes>[0], routes) : undefined;
+        if (!m) {
+          keep.push(e);
+          continue;
+        }
+        this.linkedHttpCalls++;
+        const caller = this.graph.symbols.get(from);
+        for (const entry of m.entries) {
+          const links = this.routeLinks.get(from) ?? [];
+          links.push({ entryId: entry.id, line: e.line, confidence: m.confidence, reason: m.reason });
+          this.routeLinks.set(from, links);
+          (entry.clientCallers ??= []).push({ id: from, name: caller ? (caller.container ? `${caller.container}.${caller.name}` : caller.name) : from, file: e.file, line: e.line, confidence: m.confidence });
+        }
+      }
+      this.sinks.edges.set(from, keep);
+    }
+    const used = new Set([...this.sinks.edges.values()].flat().map((e) => e.to));
+    for (const [id, n] of this.sinks.nodes) if (n.kind === 'external' && !used.has(id)) this.sinks.nodes.delete(id);
   }
 
   // ---------------- helpers ----------------
@@ -358,6 +391,19 @@ export class Project {
   private calleesOf(id: string, hideGuesses = false, showTrivial = false): { to: string; line: number; confidence: Confidence; reason: string; kind: FlowEdge['kind'] }[] {
     const out: { to: string; line: number; confidence: Confidence; reason: string; kind: FlowEdge['kind'] }[] = [];
     const seen = new Set<string>();
+    const entry = this.entryById.get(id);
+    if (entry) {
+      for (const m of entry.middleware ?? []) if (m.id) out.push({ to: m.id, line: entry.line, confidence: 'certain', reason: 'middleware', kind: 'calls' });
+      if (entry.handlerId) out.push({ to: entry.handlerId, line: entry.line, confidence: 'certain', reason: 'route handler', kind: 'calls' });
+      return out;
+    }
+    for (const l of this.routeLinks.get(id) ?? []) {
+      if (hideGuesses && l.confidence === 'guess') continue;
+      if (!seen.has(l.entryId)) {
+        seen.add(l.entryId);
+        out.push({ to: l.entryId, line: l.line, confidence: l.confidence, reason: l.reason, kind: 'http' });
+      }
+    }
     const sym = this.graph.symbols.get(id);
     // Classes only expand to their data sinks (e.g. repository -> table) to avoid pulling in every method.
     if (!sym || (sym.kind !== 'class' && sym.kind !== 'interface' && sym.kind !== 'struct')) {
@@ -456,6 +502,9 @@ export class Project {
       } else if (this.sinks.nodes.has(id)) {
         const sk = this.sinks.nodes.get(id)!;
         n = { id, kind: sk.kind, label: sk.label, sublabel: sk.detail, role: sk.kind === 'table' ? 'table' : sk.kind === 'channel' ? 'channel' : 'external', depth, hiddenChildren: 0 };
+      } else if (this.entryById.has(id)) {
+        const e = this.entryById.get(id)!;
+        n = { id, kind: 'entry', label: e.label, sublabel: e.framework, role: e.kind === 'page' ? 'page' : 'route', file: e.file, line: e.line, depth, hiddenChildren: 0 };
       } else if (id.startsWith('file:')) {
         const f = id.slice(5);
         n = { id, kind: 'symbol', label: `${path.posix.basename(f)} (top level)`, sublabel: f, role: 'entry', file: f, line: 1, depth, hiddenChildren: 0 };
@@ -590,6 +639,7 @@ export class Project {
         symbol: { id, name: sink.label, kind: 'class', file: '', lang: 'typescript', range: { sl: 0, sc: 0, el: 0, ec: 0 }, nameRange: { sl: 0, sc: 0, el: 0, ec: 0 }, signature: sink.detail ?? '', annotations: [], role },
         callees: [],
         callers,
+        routeCalls: [],
         sinks: [],
         usedBy: [],
         snippet: '',
@@ -615,7 +665,8 @@ export class Project {
     callers.sort((a, b) => Number(a.target.role === 'test') - Number(b.target.role === 'test'));
     const sinks = (this.sinks.edges.get(id) ?? []).map((e) => ({ node: this.sinks.nodes.get(e.to)!, kind: e.kind, line: e.line })).filter((x) => x.node);
     const usedBy = [...(this.reach.get(id) ?? [])].slice(0, 30).map((eid) => ({ id: eid, label: this.entryById.get(eid)?.label ?? eid }));
-    return { symbol: s, callees, callers, sinks, usedBy, snippet: '' };
+    const routeCalls = (this.routeLinks.get(id) ?? []).map((l) => ({ entryId: l.entryId, label: this.entryById.get(l.entryId)?.label ?? l.entryId, line: l.line, confidence: l.confidence, reason: l.reason }));
+    return { symbol: s, callees, callers, routeCalls, sinks, usedBy, snippet: '' };
   }
 
   private pseudoSymbol(id: string): CodeSymbol | undefined {

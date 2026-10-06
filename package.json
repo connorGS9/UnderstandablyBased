@@ -1,0 +1,108 @@
+{
+  "name": "understandably-based",
+  "version": "0.1.0",
+  "description": "Understand any codebase: routes, data flow, and the code behind them.",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "dev:web": "tsx scripts/dev-web.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "inspect": "tsx scripts/inspect.ts",
+    "postinstall": "install-electron || true",
+    "dist": "electron-vite build && electron-builder",
+    "test": "node --import tsx --test test/*.test.ts",
+    "dist:dir": "electron-vite build && electron-builder --dir"
+  },
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^5.2.0",
+    "@xyflow/react": "^12.12.0",
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
+    "elkjs": "^0.12.0",
+    "ignore": "^7.0.12",
+    "monaco-editor": "^0.57.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "tree-sitter-wasms": "^0.1.13",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^7.3.7",
+    "web-tree-sitter": "^0.25.10",
+    "zustand": "^5.0.15"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true,
+    "esbuild@0.28.2": true,
+    "electron-winstaller@5.4.0": true
+  },
+  "productName": "UnderstandablyBased",
+  "author": {
+    "name": "UnderstandablyBased contributors"
+  },
+  "homepage": "https://github.com/",
+  "build": {
+    "appId": "dev.understandablybased.app",
+    "productName": "UnderstandablyBased",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "out/main/**"
+    ],
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Development",
+      "maintainer": "UnderstandablyBased contributors"
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.developer-tools"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "extraResources": [
+      {
+        "from": "node_modules/web-tree-sitter/tree-sitter.wasm",
+        "to": "wasm/tree-sitter.wasm"
+      },
+      {
+        "from": "node_modules/tree-sitter-wasms/out",
+        "to": "wasm",
+        "filter": [
+          "tree-sitter-javascript.wasm",
+          "tree-sitter-typescript.wasm",
+          "tree-sitter-tsx.wasm",
+          "tree-sitter-java.wasm",
+          "tree-sitter-python.wasm",
+          "tree-sitter-c.wasm",
+          "tree-sitter-cpp.wasm",
+          "tree-sitter-go.wasm",
+          "tree-sitter-rust.wasm",
+          "tree-sitter-c_sharp.wasm"
+        ]
+      }
+    ],
+    "npmRebuild": false
+  }
+}

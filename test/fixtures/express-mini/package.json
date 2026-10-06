@@ -1,0 +1,1 @@
+{ "name": "express-mini", "main": "src/server.js", "dependencies": { "express": "^4.19.0", "pg": "^8.0.0" } }

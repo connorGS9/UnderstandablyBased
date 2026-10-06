@@ -4,6 +4,7 @@ import { useStore, type CodeLoc } from '../store';
 import type { CodeLink, FileView, SymbolRef } from '../../../engine/types';
 import { monaco, languageForPath } from '../lib/monaco';
 import { loadFile } from '../lib/cache';
+import { useHint } from '../lib/hints';
 import { useTheme } from '../lib/theme';
 import { CONFIDENCE, ROLES } from '../lib/roles';
 import { RoleChip, RoleDot } from './Bits';
@@ -31,6 +32,7 @@ export function CodeView({ loc }: { loc: CodeLoc }) {
   const showFlow = useStore((s) => s.showFlow);
   const flowRoot = useStore((s) => s.flowRoot);
   const revision = useStore((s) => s.revision);
+  useHint('code-view', !!file);
 
   // Create the editor once.
   useEffect(() => {
@@ -155,7 +157,7 @@ export function CodeView({ loc }: { loc: CodeLoc }) {
   const focus = file && loc.symbolId ? file.symbols.find((s) => s.id === loc.symbolId) : undefined;
 
   return (
-    <div className="code-wrap" onClick={() => menu && setMenu(null)}>
+    <div className="code-wrap" onClick={() => menu && setMenu(null)} data-hint="code">
       <div className="code-head">
         {focus?.role && <RoleChip role={focus.role} />}
         <span className="mono ellipsis grow" title={loc.file}>

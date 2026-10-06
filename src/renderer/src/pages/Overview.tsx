@@ -2,21 +2,13 @@ import type { CSSProperties, ReactNode } from 'react';
 import { useStore } from '../store';
 import { MethodBadge, RoleDot } from '../components/Bits';
 import { ROLES, roleColor } from '../lib/roles';
+import { KIND_GUIDE } from '../lib/kinds';
+import { useHint } from '../lib/hints';
 import type { EntryPoint, Role } from '../../../engine/types';
 import { IconBolt, IconDatabase, IconFlow, IconLayers, IconRoute } from '../components/Icons';
 
 const LANG_COLORS = ['var(--role-controller)', 'var(--role-service)', 'var(--role-repository)', 'var(--role-route)', 'var(--role-model)', 'var(--role-table)', 'var(--role-external)'];
 
-const KIND_GUIDE: Record<string, string> = {
-  'web-backend': 'Start from a route in Explore: each one shows the controller that handles it, the services it calls, and the tables it touches.',
-  'fullstack-web': 'This repo has both a backend and a frontend. Routes show the server side; Pages show screens in the UI.',
-  'web-frontend': 'Start from a page: it shows the components and data-fetching code behind each screen.',
-  'low-latency': 'Start from a process (main) or a channel. Channels show which processes write to and read from each shared-memory segment, socket or topic.',
-  game: 'Start from main or the game loop; look for update/render functions and the systems they call.',
-  cli: 'Start from main; commands usually branch out from argument parsing there.',
-  library: 'No entry points were found, so this looks like a library. Use search (Ctrl+K) to jump to its public classes and functions.',
-  generic: 'Start from a main() function in Processes and follow what it calls.',
-};
 
 export function Overview() {
   const summary = useStore((s) => s.summary)!;
@@ -32,6 +24,18 @@ export function Overview() {
   const channels = entries.filter((e) => e.kind === 'channel');
   const jobs = entries.filter((e) => e.kind === 'job');
   const pct = Math.round((100 * stats.resolvedCalls) / Math.max(1, stats.calls));
+
+  // Greet every newly opened codebase with what it is and where to start.
+  useHint(
+    'project-intro',
+    true,
+    {
+      title: `Welcome to ${summary.name}`,
+      body: `${top ? `This looks like a ${top.label.toLowerCase()}. ` : ''}${KIND_GUIDE[top?.kind ?? 'generic'] ?? KIND_GUIDE.generic}`,
+      target: '[data-hint="start-here"]',
+    },
+    `project:${summary.root}`,
+  );
 
   const startHere: EntryPoint[] = [...processes.slice(0, 2), ...routes.filter((r) => r.handlerId).slice(0, 6), ...pages.slice(0, 3), ...channels.slice(0, 3), ...jobs.slice(0, 2)].slice(0, 10);
 
@@ -98,7 +102,7 @@ export function Overview() {
             )}
           </section>
 
-          <section className="card">
+          <section className="card" data-hint="start-here">
             <h3>Start here</h3>
             {startHere.length ? (
               <div className="start-list">

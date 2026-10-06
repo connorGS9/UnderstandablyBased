@@ -81,7 +81,7 @@ export function Guide() {
     });
 
   return (
-    <aside className="panel guide" aria-label="Guide">
+    <aside className="panel guide" aria-label="Guide" data-hint="guide">
       <div className="panel-head">
         <div className="seg" role="tablist">
           {tabs.map((t) => (

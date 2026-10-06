@@ -159,3 +159,12 @@ export const IconPin = (p: P) => (
     <path d="M12 17v5M9 3h6l-1 6 3 3v2H7v-2l3-3z" />
   </svg>
 );
+export const IconBulb = (p: P & { off?: boolean }) => {
+  const { off, ...rest } = p;
+  return (
+    <svg {...base(rest)}>
+      <path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.6 10.8c.7.5 1.1 1.3 1.1 2.2h5c0-.9.4-1.7 1.1-2.2A6 6 0 0 0 12 3z" />
+      {off && <path d="M4 4l16 16" />}
+    </svg>
+  );
+};

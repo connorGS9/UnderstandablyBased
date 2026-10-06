@@ -5,6 +5,8 @@ import { Explore } from './Explore';
 import { Diagrams } from './Diagrams';
 import { CommandPalette } from '../components/CommandPalette';
 import { SettingsDialog } from '../components/SettingsDialog';
+import { HintToasts, HintsMenu } from '../components/Hints';
+import { useHint, useHints } from '../lib/hints';
 import { api } from '../api';
 import { IconBack, IconForward, IconGear, IconMoon, IconRefresh, IconSearch, IconSun, IconX } from '../components/Icons';
 import { useTheme } from '../lib/theme';
@@ -21,6 +23,12 @@ export function Workspace() {
   const s = useStore();
   const [theme, setTheme] = useTheme();
   const summary = s.summary!;
+  const seenCount = useHints((h) => h.seen.size);
+
+  // Tips: explain the tabs, and later point out search and settings. (The per-project welcome lives on the Overview.)
+  useHint('tabs');
+  useHint('search', seenCount >= 4);
+  useHint('settings', seenCount >= 6);
 
   // Auto-refresh: the engine re-indexes when files change and pushes the new analysis here.
   useEffect(
@@ -83,7 +91,7 @@ export function Workspace() {
             <IconForward />
           </button>
         </div>
-        <nav className="tabs" aria-label="Views">
+        <nav className="tabs" aria-label="Views" data-hint="tabs">
           {TABS.map((t, i) => (
             <button key={t.key} className={`tab ${s.view === t.key ? 'active' : ''}`} onClick={() => s.setView(t.key)} title={`${t.hint} (${isMac ? '⌘' : 'Ctrl'}+${i + 1})`}>
               {t.label}
@@ -101,7 +109,7 @@ export function Workspace() {
             Update failed
           </span>
         )}
-        <button className="search-trigger" onClick={() => s.setPalette(true)}>
+        <button className="search-trigger" onClick={() => s.setPalette(true)} data-hint="search">
           <IconSearch size={14} />
           <span className="grow" style={{ textAlign: 'left' }}>Search routes, code, tables…</span>
           <span className="kbd">{isMac ? '⌘K' : 'Ctrl K'}</span>
@@ -109,7 +117,8 @@ export function Workspace() {
         <button className="icon-btn" onClick={s.reindex} disabled={s.updating} title="Re-analyze the project (only changed files are re-read)" aria-label="Re-analyze">
           <IconRefresh />
         </button>
-        <button className="icon-btn" onClick={() => s.setSettingsOpen(true)} title="Project settings: ignored folders, tests, role corrections, pinned entry points" aria-label="Project settings">
+        <HintsMenu />
+        <button className="icon-btn" data-hint="settings" onClick={() => s.setSettingsOpen(true)} title="Project settings: ignored folders, tests, role corrections, pinned entry points" aria-label="Project settings">
           <IconGear />
         </button>
         <button className="icon-btn" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} title="Toggle light/dark" aria-label="Toggle theme">
@@ -126,6 +135,7 @@ export function Workspace() {
       </main>
       {s.paletteOpen && <CommandPalette />}
       {s.settingsOpen && <SettingsDialog />}
+      <HintToasts />
     </div>
   );
 }

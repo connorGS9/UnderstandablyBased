@@ -19,6 +19,7 @@ import type { FlowGraph, FlowNode } from '../../../engine/types';
 import { boundsOf, useMeasuredLayout, type MeasuredLayout } from '../lib/layout';
 import { CONFIDENCE, ROLES, roleColor } from '../lib/roles';
 import { IconFit } from './Icons';
+import { useHint } from '../lib/hints';
 
 type FlowNodeData = FlowNode & { selected: boolean; onExpand: (id: string) => void; isRoot: boolean } & Record<string, unknown>;
 
@@ -127,6 +128,7 @@ function Canvas({ rootId }: { rootId: string }) {
   const layoutEdges = useMemo(() => graph?.edges.map((e) => ({ id: e.id, from: e.from, to: e.to })) ?? [], [graph]);
   const layout = useMeasuredLayout(graphKey, nodeIds, layoutEdges, { layerGap: 56, nodeGap: 16 });
   if (layout) lastPos.current = layout.pos;
+  useHint('explore-flow', !!layout && (graph?.nodes.length ?? 0) > 1);
 
   /** Fit small flows to the screen; for big ones keep text readable and start at the root on the left. */
   const smartFit = useCallback(
@@ -209,7 +211,7 @@ function Canvas({ rootId }: { rootId: string }) {
   };
 
   return (
-    <div className="flow-wrap" ref={wrapRef}>
+    <div className="flow-wrap" ref={wrapRef} data-hint="flow">
       <ReactFlow
         nodes={nodes}
         edges={edges}

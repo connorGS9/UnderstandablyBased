@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { scanProject } from './scan';
 import { extractFile } from './extract';
+import { computeInsights } from './insight';
 import { CodeGraph } from './graph';
 import { applyRoleOverrides, assignRoles } from './roles';
 import { extractOrmTables, mergeTables, parsePrisma, parseSql } from './db';
@@ -292,6 +293,7 @@ export class Project {
     for (const e of this.entries) this.entryById.set(e.id, e);
     this.linkHttpCalls();
     this.computeReach();
+    const { families, backbone } = computeInsights(this);
 
     const profile = detectProfile(this.graph, this.files, manifests, scan.extras, this.entries);
     if (settings.projectKind) {
@@ -318,6 +320,8 @@ export class Project {
         tables: this.tables.length + [...this.sinks.nodes.values()].filter((n) => n.kind === 'table' && !this.tables.some((t) => t.name.toLowerCase() === n.label.toLowerCase())).length,
       },
       entries: this.entries,
+      families,
+      backbone,
       files: this.files,
       warnings,
       settings,

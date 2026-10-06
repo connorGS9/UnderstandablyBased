@@ -126,8 +126,52 @@ function EntryHeader({ entry }: { entry: EntryPoint }) {
         </div>
       ))}
     </div>
+    {entry.insight && (entry.insight.reasons.length > 0 || entry.insight.family) && <EntryInsightSection entry={entry} />}
     {!!entry.clientCallers?.length && <ClientCallers entry={entry} />}
     </>
+  );
+}
+
+/** Why this entry point ranks where it does, and the family of look-alikes it belongs to. */
+function EntryInsightSection({ entry }: { entry: EntryPoint }) {
+  const summary = useStore((s) => s.summary)!;
+  const traceFrom = useStore((s) => s.traceFrom);
+  const ins = entry.insight!;
+  const fam = ins.family ? summary.families.find((f) => f.id === ins.family) : undefined;
+  return (
+    <div className="insp-section">
+      <h4>{ins.tier === 'key' ? 'Why this is a key entry point' : fam ? 'Part of a family' : 'What stands out'}</h4>
+      {ins.gist && (
+        <div className="mono" style={{ fontSize: 12, marginBottom: 6 }}>
+          {ins.gist}
+        </div>
+      )}
+      {ins.reasons.length > 0 && (
+        <ul className="evidence" style={{ margin: 0 }}>
+          {ins.reasons.map((r, i) => (
+            <li key={i}>
+              <span>{r}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {fam && (
+        <div className="explain" style={{ '--rc': 'var(--accent)', marginTop: 8 } as CSSProperties}>
+          <b className="mono" style={{ color: 'var(--text)' }}>{fam.label}</b> · {fam.members.length} members
+          <div className="faint" style={{ marginTop: 4 }}>{fam.explain}</div>
+          {fam.shared.length > 0 && (
+            <div className="row" style={{ flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+              {fam.shared.map((s) => (
+                <button key={s.id} className="btn small" onClick={() => traceFrom(s.id, s.name, 'service')} title="Draw the flow of the code every member shares">
+                  <IconFlow size={14} /> {s.name}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      <div className="faint" style={{ fontSize: 11, marginTop: 6 }}>Ranked from the code alone: how much code and data it reaches, where it is used, and what it does.</div>
+    </div>
   );
 }
 

@@ -1,6 +1,6 @@
 import { useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { useStore } from '../store';
-import type { EntryKind, EntryPoint, FileEntry, Role } from '../../../engine/types';
+import type { EntryFamily, EntryKind, EntryPoint, EntryTrait, FileEntry, Role } from '../../../engine/types';
 import { MethodBadge, RoleDot, Empty } from './Bits';
 import { IconChevron, IconFile, IconFolder } from './Icons';
 import { METHOD_COLORS } from '../lib/roles';
@@ -27,6 +27,17 @@ const TAB_HELP: Record<Tab, string> = {
   files: 'Every source file, if you would rather browse by folder.',
 };
 
+const NOUN: Record<EntryKind, string> = { 'http-route': 'route', page: 'page', process: 'process', job: 'job', channel: 'channel', custom: 'entry point' };
+const TRAIT_LABEL: Partial<Record<EntryTrait, { label: string; title: string }>> = {
+  ai: { label: 'AI', title: 'Calls an AI model' },
+  stream: { label: 'stream', title: 'Streams its response (server-sent events, chunked output)' },
+  auth: { label: 'auth', title: 'Authentication, sessions or tokens' },
+  realtime: { label: 'live', title: 'Keeps a live connection open (WebSocket)' },
+};
+
+/** A section of the importance view: key entry points, one family, or everything else. */
+type Section = { id: string; title: string; explain?: string; items: EntryPoint[]; family?: EntryFamily; defaultOpen: boolean };
+
 export const entryRole = (e: EntryPoint): Role => (e.kind === 'http-route' ? 'route' : e.kind === 'page' ? 'page' : e.kind === 'channel' ? 'channel' : 'entry');
 
 export function Guide() {
@@ -46,11 +57,16 @@ export function Guide() {
   const tab = tabs.includes(tabState) ? tabState : tabs[0];
   const [filter, setFilter] = useState('');
   const [methods, setMethods] = useState<Set<string>>(new Set());
-  const [groupBy, setGroupBy] = useState<'source' | 'path'>('source');
+  const [groupByState, setGroupBy] = useState<'importance' | 'source' | 'path' | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [opened, setOpened] = useState<Set<string>>(new Set());
+  const traceFrom = useStore((s) => s.traceFrom);
   const activeId = trail[0]?.id;
 
   const list = useMemo(() => summary.entries.filter((e) => e.kind === tab), [summary, tab]);
+  // Long lists start with the most central entry points; short ones keep the familiar file grouping.
+  const ranked = list.some((e) => e.insight?.tier === 'key' || e.insight?.family);
+  const groupBy = groupByState ?? (ranked && list.length >= 15 ? 'importance' : 'source');
   const allMethods = useMemo(() => [...new Set(list.map((e) => e.method ?? 'ANY'))].sort(), [list]);
 
   const filtered = useMemo(() => {
@@ -58,9 +74,26 @@ export function Guide() {
     return list.filter((e) => {
       if (methods.size && !methods.has(e.method ?? 'ANY')) return false;
       if (!q) return true;
-      return `${e.label} ${e.handlerName ?? ''} ${e.group} ${e.file}`.toLowerCase().includes(q);
+      return `${e.label} ${e.handlerName ?? ''} ${e.group} ${e.file} ${e.insight?.gist ?? ''}`.toLowerCase().includes(q);
     });
   }, [list, filter, methods]);
+
+  const sections = useMemo((): Section[] | null => {
+    if (groupBy !== 'importance' || tab === 'files') return null;
+    const noun = NOUN[tab as EntryKind] ?? 'entry point';
+    const byScore = (a: EntryPoint, b: EntryPoint) => (b.insight?.score ?? 0) - (a.insight?.score ?? 0) || a.label.localeCompare(b.label);
+    const key = filtered.filter((e) => e.insight?.tier === 'key').sort(byScore);
+    const out: Section[] = [];
+    if (key.length) out.push({ id: 'key', title: `Key ${noun}s`, explain: `The ${noun}s that reach the most code and data, are used from the most places, or handle AI, streaming or sign-in. Hover a row for every reason.`, items: key, defaultOpen: true });
+    for (const fam of summary.families.filter((f) => f.kind === tab)) {
+      const members = new Set(fam.members);
+      const items = filtered.filter((e) => members.has(e.id)).sort((a, b) => (a.path ?? a.label).localeCompare(b.path ?? b.label));
+      if (items.length) out.push({ id: fam.id, title: fam.label, explain: fam.explain, items, family: fam, defaultOpen: !!filter.trim() });
+    }
+    const rest = filtered.filter((e) => e.insight?.tier !== 'key' && !e.insight?.family).sort(byScore);
+    if (rest.length) out.push({ id: 'rest', title: out.length ? `Other ${noun}s` : `All ${noun}s`, explain: out.length ? 'Most central first.' : undefined, items: rest, defaultOpen: true });
+    return out;
+  }, [groupBy, tab, filtered, summary, filter]);
 
   const groups = useMemo(() => {
     const m = new Map<string, EntryPoint[]>();
@@ -94,6 +127,12 @@ export function Guide() {
         {tab !== 'files' && (
           <>
             <input className="input" placeholder={`Filter ${TAB_LABEL[tab].toLowerCase()}…`} value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Filter" />
+            {tab !== 'http-route' && ranked && (
+              <select className="select" value={groupBy === 'importance' ? 'importance' : 'source'} onChange={(e) => setGroupBy(e.target.value as 'importance' | 'source')} aria-label="Order">
+                <option value="importance">By importance</option>
+                <option value="source">By file</option>
+              </select>
+            )}
             {tab === 'http-route' && (
               <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
                 <div className="chips">
@@ -115,7 +154,8 @@ export function Guide() {
                     </button>
                   ))}
                 </div>
-                <select className="select" value={groupBy} onChange={(e) => setGroupBy(e.target.value as 'source' | 'path')} aria-label="Group routes by">
+                <select className="select" value={groupBy} onChange={(e) => setGroupBy(e.target.value as 'importance' | 'source' | 'path')} aria-label="Group routes by">
+                  {ranked && <option value="importance">By importance</option>}
                   <option value="source">By file</option>
                   <option value="path">By path</option>
                 </select>
@@ -129,6 +169,49 @@ export function Guide() {
           <FileTree files={summary.files} activeFile={code?.file} onOpen={(f) => openCode({ file: f }, f.split('/').pop(), 'other')} />
         ) : filtered.length === 0 ? (
           <Empty>Nothing matches.</Empty>
+        ) : sections ? (
+          sections.map((sec) => {
+            const open = opened.has(sec.id) ? true : collapsed.has(sec.id) ? false : sec.defaultOpen;
+            const toggle = () => {
+              setOpened((s) => {
+                const n = new Set(s);
+                if (open) n.delete(sec.id);
+                else n.add(sec.id);
+                return n;
+              });
+              setCollapsed((s) => {
+                const n = new Set(s);
+                if (open) n.add(sec.id);
+                else n.delete(sec.id);
+                return n;
+              });
+            };
+            return (
+              <div key={sec.id} className={`guide-section ${sec.family ? 'family' : sec.id}`}>
+                <button className="group-head" onClick={toggle} aria-expanded={open} title={sec.explain}>
+                  <IconChevron size={12} open={open} />
+                  <span className="ellipsis grow">{sec.title}</span>
+                  <span>{sec.items.length}</span>
+                </button>
+                {open && sec.explain && (
+                  <div className="section-explain">
+                    {sec.explain}
+                    {sec.family && sec.family.shared.length > 0 && (
+                      <div className="row" style={{ flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
+                        <span>Shared code:</span>
+                        {sec.family.shared.map((s) => (
+                          <button key={s.id} className="link mono" onClick={() => traceFrom(s.id, s.name, 'service')} title="Draw the flow of the shared code">
+                            {s.name}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {open && sec.items.map((e) => <EntryRow key={e.id} e={e} active={activeId === e.id} sub={sec.id === 'key' ? 'reasons' : 'gist'} onOpen={() => openEntry(e.id, e.label, entryRole(e), e.handlerId)} />)}
+              </div>
+            );
+          })
         ) : (
           groups.map(([g, items]) => (
             <div key={g}>
@@ -139,22 +222,31 @@ export function Guide() {
                   <span>{items.length}</span>
                 </button>
               )}
-              {!collapsed.has(g) &&
-                items.map((e) => (
-                  <button key={e.id} className={`entry-row ${activeId === e.id ? 'active' : ''}`} onClick={() => openEntry(e.id, e.label, entryRole(e), e.handlerId)} title={`${e.label}\n${e.handlerName ?? ''}\n${e.file}:${e.line}${e.notes ? '\n' + e.notes.join('\n') : ''}`}>
-                    {e.kind === 'http-route' ? <MethodBadge method={e.method} /> : <RoleDot role={entryRole(e)} />}
-                    <span className="grow col" style={{ minWidth: 0 }}>
-                      <span className="path ellipsis">{e.kind === 'http-route' || e.kind === 'page' ? e.path : e.label}</span>
-                      {e.handlerName && <span className="handler ellipsis">{e.handlerName}</span>}
-                    </span>
-                    {!e.handlerId && <span className="faint" title="Handler could not be resolved">?</span>}
-                  </button>
-                ))}
+              {!collapsed.has(g) && items.map((e) => <EntryRow key={e.id} e={e} active={activeId === e.id} sub="handler" onOpen={() => openEntry(e.id, e.label, entryRole(e), e.handlerId)} />)}
             </div>
           ))
         )}
       </div>
     </aside>
+  );
+}
+
+function EntryRow({ e, active, sub, onOpen }: { e: EntryPoint; active: boolean; sub: 'handler' | 'gist' | 'reasons'; onOpen: () => void }) {
+  const ins = e.insight;
+  const line = sub === 'reasons' ? ins?.reasons.slice(0, 2).join(' · ') : sub === 'gist' ? ins?.gist ?? e.handlerName : e.handlerName;
+  const title = [e.label, e.handlerName, `${e.file}:${e.line}`, ...(ins?.reasons.length ? ['', 'Why:', ...ins.reasons.map((r) => `• ${r}`)] : []), ...(e.notes ?? [])].filter((x) => x !== undefined).join('\n');
+  return (
+    <button className={`entry-row ${active ? 'active' : ''}`} onClick={onOpen} title={title}>
+      {e.kind === 'http-route' ? <MethodBadge method={e.method} /> : <RoleDot role={entryRole(e)} />}
+      <span className="grow col" style={{ minWidth: 0 }}>
+        <span className="row" style={{ gap: 4, minWidth: 0 }}>
+          <span className="path ellipsis">{e.kind === 'http-route' || e.kind === 'page' ? e.path : e.label}</span>
+          {ins?.traits.map((t) => TRAIT_LABEL[t] && <span key={t} className={`trait trait-${t}`} title={TRAIT_LABEL[t]!.title}>{TRAIT_LABEL[t]!.label}</span>)}
+        </span>
+        {line && <span className="handler ellipsis">{line}</span>}
+      </span>
+      {!e.handlerId && <span className="faint" title="Handler could not be resolved">?</span>}
+    </button>
   );
 }
 

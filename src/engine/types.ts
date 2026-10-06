@@ -227,6 +227,44 @@ export interface EntryPoint {
   notes?: string[];
   /** Code in this project that calls this route over HTTP (e.g. frontend API functions). */
   clientCallers?: { id: string; name: string; file: string; line: number; confidence: Confidence }[];
+  /** How central this entry point looks from the code alone, and what sets it apart. */
+  insight?: EntryInsight;
+}
+
+export type EntryTrait = 'ai' | 'stream' | 'auth' | 'realtime' | 'writes' | 'popular' | 'large' | 'external';
+
+export interface EntryInsight {
+  /** 0–100, comparable between entry points of the same kind. */
+  score: number;
+  /** 'key': among the most central; 'routine': part of a family of near-identical entry points. */
+  tier: 'key' | 'normal' | 'routine';
+  traits: EntryTrait[];
+  /** Why it scores the way it does, most telling first ("streams responses", "called from 6 pages"). */
+  reasons: string[];
+  /** One line on what this entry point does that its siblings do not: `"get_weather" · reads cache`. */
+  gist?: string;
+  family?: string;
+}
+
+/** Entry points that do little themselves and hand the work to the same shared code. */
+export interface EntryFamily {
+  id: string;
+  kind: EntryKind;
+  label: string;
+  explain: string;
+  /** The shared code every member goes through. */
+  shared: { id: string; name: string }[];
+  members: string[];
+}
+
+/** Code that most entry points of one kind pass through (auth middleware, a request wrapper, the DB layer). */
+export interface Backbone {
+  kind: EntryKind;
+  id: string;
+  name: string;
+  role: Role;
+  /** Share of the entry points of that kind that reach it, 0–1. */
+  share: number;
 }
 
 export interface Evidence {
@@ -336,6 +374,8 @@ export interface ProjectSummary {
   profile: ProjectProfile;
   stats: { files: number; sourceFiles: number; symbols: number; calls: number; resolvedCalls: number; lines: number; tables: number; linkedHttpCalls: number };
   entries: EntryPoint[];
+  families: EntryFamily[];
+  backbone: Backbone[];
   files: FileEntry[];
   warnings: string[];
   settings: ProjectSettings;

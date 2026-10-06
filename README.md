@@ -9,6 +9,11 @@ Everything runs locally and offline. Nothing is sent anywhere.
 ## What you can do
 
 - **Overview**: says what kind of program this is (web backend, full-stack app, low-latency/IPC system, CLI, library…) and shows the evidence for that. Also lists the frameworks detected, a language breakdown, and a "start here" list.
+- **Big codebases stay digestible**: with many routes (or pages, processes, jobs), the list opens **By importance**:
+  - **Key** entry points first: the ones that reach the most code and data, are used from the most pages, call an AI model, stream responses or handle sign-in. Each says why.
+  - **Families** of look-alikes collapse into one group, such as 150 "tool" routes that all hand off to `runTool`, or routes that each call their own function in `tools/`. Every member is still listed, with a one-line summary of what it adds (`"get_weather" · reads cache`), and the filter searches those summaries.
+  - The Overview shows these patterns and the code most requests pass through (auth middleware, the DB layer).
+  - All of this comes from the code alone, with no git history, logs or traffic, so it works the same for any language or kind of program.
 - **Explore**: pick a route, page, process, job or channel.
   - **Flow**: shows every function the request passes through, colored by role: middleware → controller → service → data access → table / external API / channel.
   - **Double-click** a box to read its code. Calls are underlined, so **click a call** to follow it into the next function. The breadcrumb trail records how you got there; click any step, or Home, to jump back. Back/Forward work like a browser (Alt+←/→ or mouse buttons).
@@ -97,6 +102,7 @@ folder ─► scan ─► parse (tree-sitter, in a worker) ─► code graph ─
 - `src/engine/roles.ts`: decides whether each class or function is a controller, service, repository and so on, using annotations, base classes, names, file names and folders.
 - `src/engine/routes.ts`: framework-specific entry point detection, including router mounting and prefixes.
 - `src/engine/db.ts` and `src/engine/sinks.ts`: database schema, and where code touches tables, HTTP services and channels.
+- `src/engine/insight.ts`: ranks entry points, finds families of look-alikes and the shared backbone.
 - `src/engine/project.ts`: orchestrates indexing and answers UI queries (flows, symbol details, file views, search).
 - `electron/`: desktop shell. Indexing runs in a worker thread so the window never freezes.
 - `src/renderer/`: React UI (React Flow + ELK for diagrams, Monaco for code).

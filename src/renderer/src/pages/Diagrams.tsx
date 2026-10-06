@@ -17,6 +17,7 @@ import { useStore, type DiagramTab } from '../store';
 import type { DbTable, DiagramEdge, DiagramNode, Diagrams as DiagramData, RouteTreeNode, Role } from '../../../engine/types';
 import { loadDiagrams } from '../lib/cache';
 import { useMeasuredLayout } from '../lib/layout';
+import { useHint } from '../lib/hints';
 import { ROLES, ROLE_RANK, roleColor } from '../lib/roles';
 import { MethodBadge, RoleDot, shortFile } from '../components/Bits';
 import { entryRole } from '../components/Guide';
@@ -43,6 +44,7 @@ export function Diagrams() {
   }, [revision]);
 
   const help = TABS.find((t) => t.key === tab)!.help;
+  useHint(`diagrams-${tab}`, !!data);
 
   return (
     <div className="diagrams">
@@ -194,7 +196,7 @@ function GraphDiagram({ nodes, edges, partitions, emptyText }: { nodes: DiagramN
 
   return (
     <div className="diagram-body">
-      <div className="diagram-canvas">
+      <div className="diagram-canvas" data-hint="diagram">
         <ReactFlow nodes={rfNodes} edges={rfEdges} nodeTypes={graphNodeTypes} onNodeClick={(_, n) => setSelected(n.id)} onPaneClick={() => setSelected(null)} minZoom={0.1} proOptions={{ hideAttribution: true }} nodesConnectable={false} elementsSelectable={false}>
           <Background gap={22} size={1.2} color="var(--canvas-dot)" />
           <Controls showInteractive={false} position="bottom-right" />
@@ -417,7 +419,7 @@ function DatabaseDiagram({ db }: { db: DiagramData['database'] }) {
   const sel = selected ? byName.get(selected.toLowerCase()) : undefined;
   return (
     <div className="diagram-body">
-      <div className="diagram-canvas">
+      <div className="diagram-canvas" data-hint="diagram">
         <ReactFlow nodes={nodes} edges={edges} nodeTypes={tableTypes} onNodeClick={(_, n) => setSelected(n.id)} onPaneClick={() => setSelected(null)} minZoom={0.1} proOptions={{ hideAttribution: true }} nodesConnectable={false} elementsSelectable={false}>
           <Background gap={22} size={1.2} color="var(--canvas-dot)" />
           <Controls showInteractive={false} position="bottom-right" />
@@ -552,7 +554,7 @@ function RouteDiagram({ tree }: { tree: RouteTreeNode }) {
 
   return (
     <div className="diagram-body" style={{ gridTemplateColumns: '1fr' }}>
-      <div className="diagram-canvas">
+      <div className="diagram-canvas" data-hint="diagram">
         <ReactFlow
           nodes={routeNodes}
           edges={routeEdges}

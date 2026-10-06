@@ -46,7 +46,7 @@ export function Inspector() {
 
   if (!selected) {
     return (
-      <aside className="panel inspector" aria-label="Inspector">
+      <aside className="panel inspector" aria-label="Inspector" data-hint="inspector">
         <div className="insp-section">
           <h4>Inspector</h4>
           <div className="dim">Select a box in the flow to see what it does, what calls it, and what it calls.</div>
@@ -56,7 +56,7 @@ export function Inspector() {
   }
 
   return (
-    <aside className="panel inspector" aria-label="Inspector">
+    <aside className="panel inspector" aria-label="Inspector" data-hint="inspector">
       <div className="panel-body">
         {entry && <EntryHeader entry={entry} />}
         {selected.startsWith('mw:') && (

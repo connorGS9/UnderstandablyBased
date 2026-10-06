@@ -1,6 +1,7 @@
 import { useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { useStore } from '../store';
 import { api } from '../api';
+import { useHint } from '../lib/hints';
 import { Guide } from '../components/Guide';
 import { FlowCanvas } from '../components/FlowCanvas';
 import { CodeView } from '../components/CodeView';
@@ -75,6 +76,9 @@ export function Explore() {
   };
 
   const currentIdx = trail.length - 1;
+  useHint('explore-guide');
+  useHint('inspector', !!selected && !!flowRoot && inspector);
+  useHint('explore-trail', trail.length > 1);
 
   return (
     <div className={`explore ${inspector ? '' : 'no-inspector'}`} style={{ '--guide-w': `${widths.guide}px`, '--inspector-w': `${widths.inspector}px` } as CSSProperties}>
@@ -86,7 +90,7 @@ export function Explore() {
           <button className="icon-btn" onClick={goHome} disabled={!trail.length} title="Back to the starting point (the route or entry you picked)" aria-label="Home">
             <IconHome />
           </button>
-          <nav className="crumbs grow" aria-label="Path you followed">
+          <nav className="crumbs grow" aria-label="Path you followed" data-hint="trail">
             {trail.length === 0 && <span className="faint">Pick a route or entry point on the left to start.</span>}
             {trail.map((c, i) => (
               <span key={c.id + i} className="row" style={{ gap: 2 }}>

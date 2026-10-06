@@ -12,7 +12,7 @@ let project: Project | null = null;
 let opening: Promise<Project> | null = null;
 let root: string | null = null;
 let cache = new Map<string, { mtime: number; size: number; lines: number; facts?: FileFacts }>();
-let watcher: fs.FSWatcher | null = null;
+let watchers: fs.FSWatcher[] = [];
 let refreshTimer: NodeJS.Timeout | null = null;
 let emit: (e: HostEvent) => void = () => {};
 
@@ -67,24 +67,74 @@ async function index(dir: string, onProgress: (p: Progress) => void): Promise<Pr
   return project;
 }
 
+/** Max directories watched individually on Linux; beyond this, auto-refresh is turned off for the project. */
+const MAX_WATCHED_DIRS = 4000;
+
+function isSourceChange(rel: string): boolean {
+  if (rel.split('/').some((seg) => SKIPPED_DIRS.has(seg) || (seg.startsWith('.') && seg !== '.github'))) return false;
+  const base = rel.split('/').pop()!;
+  return !!langForFile(base) || /\.(sql|prisma)$|^(package\.json|pom\.xml|build\.gradle(\.kts)?|go\.mod|Cargo\.toml|tsconfig\.json|understandably\.json)$/.test(base);
+}
+
+function stopWatching() {
+  for (const w of watchers) w.close();
+  watchers = [];
+}
+
+/**
+ * Watch the project for source changes. macOS and Windows have efficient native recursive watching.
+ * On Linux, Node's recursive mode puts an inotify watch on *every* directory, node_modules included,
+ * which can exhaust the system-wide limit and break watching in other apps; so there we watch only
+ * project directories ourselves, skipping dependency/build folders, with a cap.
+ */
 function watch(dir: string) {
-  watcher?.close();
-  watcher = null;
-  try {
-    watcher = fs.watch(dir, { recursive: true }, (_event, file) => {
-      if (!file || !project?.settings.autoRefresh) return;
-      const rel = file.toString().split(path.sep).join('/');
-      if (rel.split('/').some((seg) => SKIPPED_DIRS.has(seg) || (seg.startsWith('.') && seg !== '.github'))) return;
-      const base = rel.split('/').pop()!;
-      if (!langForFile(base) && !/\.(sql|prisma)$|^(package\.json|pom\.xml|build\.gradle(\.kts)?|go\.mod|Cargo\.toml|tsconfig\.json|understandably\.json)$/.test(base)) return;
-      scheduleRefresh();
-    });
-    watcher.on('error', () => {
-      watcher?.close();
-      watcher = null;
-    });
-  } catch {
-    // Recursive watching is unavailable on some platforms/filesystems; manual re-index still works.
+  stopWatching();
+  const onChange = (rel: string) => {
+    if (project?.settings.autoRefresh && isSourceChange(rel)) scheduleRefresh();
+  };
+  if (process.platform !== 'linux') {
+    try {
+      const w = fs.watch(dir, { recursive: true }, (_e, file) => file && onChange(file.toString().split(path.sep).join('/')));
+      w.on('error', stopWatching);
+      watchers.push(w);
+    } catch {
+      /* unsupported filesystem: manual re-index still works */
+    }
+    return;
+  }
+  const watched = new Set<string>();
+  const add = (rel: string) => {
+    if (watched.has(rel) || watched.size >= MAX_WATCHED_DIRS) return;
+    const abs = path.join(dir, rel);
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(abs, { withFileTypes: true });
+      const w = fs.watch(abs, (_e, file) => {
+        if (!file) return;
+        const childRel = rel ? `${rel}/${file}` : file.toString();
+        // New folders get watched too.
+        try {
+          if (fs.statSync(path.join(dir, childRel)).isDirectory() && !SKIPPED_DIRS.has(file.toString()) && !file.toString().startsWith('.')) add(childRel);
+        } catch {
+          /* deleted */
+        }
+        onChange(childRel);
+      });
+      w.on('error', () => w.close());
+      watchers.push(w);
+      watched.add(rel);
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (e.isDirectory() && !SKIPPED_DIRS.has(e.name) && !(e.name.startsWith('.') && e.name !== '.github')) add(rel ? `${rel}/${e.name}` : e.name);
+    }
+  };
+  add('');
+  if (watched.size >= MAX_WATCHED_DIRS) {
+    // Too big to watch politely; fall back to the manual refresh button.
+    stopWatching();
+    project?.summary.warnings.push('This project has too many folders to watch for changes, so automatic refresh is off. Use the refresh button after editing.');
   }
 }
 

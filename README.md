@@ -21,6 +21,7 @@ Everything runs locally and offline. Nothing is sent anywhere.
 - **Search** (Ctrl/⌘+K): routes, functions, classes, files and tables.
 - **Stays current**: when you edit files the analysis refreshes on its own; only changed files are re-read. The ⟳ button re-analyzes on demand.
 - **Adjustable**: the panels resize (drag their borders), and light and dark themes are both available.
+- **Tips for newcomers**: the first time you reach each screen, a short tip explains it and highlights what it's talking about. Each opened codebase also gets a welcome tip with where to start. Click **Turn off tips** on any tip to stop them (with an immediate Undo). The 💡 button in the top bar turns them back on or replays them all.
 
 ## When the analysis is not quite right
 

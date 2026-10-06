@@ -219,6 +219,8 @@ export interface EntryPoint {
   file: string;
   line: number;
   notes?: string[];
+  /** Code in this project that calls this route over HTTP (e.g. frontend API functions). */
+  clientCallers?: { id: string; name: string; file: string; line: number; confidence: Confidence }[];
 }
 
 export interface Evidence {
@@ -286,6 +288,8 @@ export interface SinkEdge {
   line: number;
   file: string;
   detail?: string;
+  /** For HTTP calls: what was requested, used to link the call to a route in this project. */
+  http?: { method?: string; path?: string; unknownPrefix?: boolean; external?: boolean; lib: string; raw: string };
 }
 
 export interface FileEntry {
@@ -324,7 +328,7 @@ export interface ProjectSummary {
   indexedAt: number;
   durationMs: number;
   profile: ProjectProfile;
-  stats: { files: number; sourceFiles: number; symbols: number; calls: number; resolvedCalls: number; lines: number; tables: number };
+  stats: { files: number; sourceFiles: number; symbols: number; calls: number; resolvedCalls: number; lines: number; tables: number; linkedHttpCalls: number };
   entries: EntryPoint[];
   files: FileEntry[];
   warnings: string[];
@@ -390,6 +394,8 @@ export interface SymbolDetail {
   symbol: CodeSymbol;
   callees: CallRef[];
   callers: CallRef[];
+  /** Routes in this project this code calls over HTTP. */
+  routeCalls: { entryId: string; label: string; line: number; confidence: Confidence; reason: string }[];
   sinks: { node: SinkNode; kind: EdgeKind; line: number }[];
   /** Entry points that reach this symbol (within the default trace depth). */
   usedBy: { id: string; label: string }[];

@@ -1,0 +1,1 @@
+{ "name": "tanstack-mini", "dependencies": { "react": "^18.3.0", "@tanstack/react-router": "^1.0.0" } }

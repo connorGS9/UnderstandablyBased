@@ -5,13 +5,16 @@ import react from '@vitejs/plugin-react';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import os from 'node:os';
-import { handle } from '../electron/engine-host';
+import { handle, onHostEvent } from '../electron/engine-host';
 import type { Progress } from '../src/engine/types';
 import type { RecentProject } from '../src/shared/api';
 
 const root = path.resolve(import.meta.dirname, '..');
 const recentPath = path.join(os.tmpdir(), 'understandably-based-recent.json');
 const listeners = new Set<(p: Progress) => void>();
+const eventListeners = new Set<(e: unknown) => void>();
+process.env.UB_SETTINGS_FILE ??= path.join(os.tmpdir(), 'understandably-based-settings.json');
+onHostEvent((e) => eventListeners.forEach((l) => l(e)));
 
 async function readBody(req: import('node:http').IncomingMessage): Promise<any> {
   const chunks: Buffer[] = [];
@@ -27,6 +30,13 @@ const apiPlugin: Plugin = {
       if (!req.url?.startsWith('/api/')) return next();
       const route = req.url.slice(5).split('?')[0];
       try {
+        if (route === 'events') {
+          res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+          const fn = (ev: unknown) => res.write(`data: ${JSON.stringify(ev)}\n\n`);
+          eventListeners.add(fn);
+          req.on('close', () => eventListeners.delete(fn));
+          return;
+        }
         if (route === 'progress') {
           res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
           const fn = (p: Progress) => res.write(`data: ${JSON.stringify(p)}\n\n`);

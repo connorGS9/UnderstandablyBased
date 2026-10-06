@@ -163,6 +163,10 @@ export interface StringFact {
 export interface JsxRouteFact {
   path: string;
   component?: string;
+  /** Lazy-loaded component module: `() => import('./views/Users.vue')`. */
+  importSource?: string;
+  /** 'jsx' (<Route>), 'object' (Vue/Angular route arrays), 'tanstack' (createFileRoute). */
+  style?: 'jsx' | 'object' | 'tanstack';
   line: number;
   scope: string;
 }
@@ -197,7 +201,7 @@ export interface ResolvedCall {
   reason: string;
 }
 
-export type EntryKind = 'http-route' | 'page' | 'process' | 'channel' | 'job';
+export type EntryKind = 'http-route' | 'page' | 'process' | 'channel' | 'job' | 'custom';
 
 export interface EntryPoint {
   id: string;
@@ -289,7 +293,30 @@ export interface FileEntry {
   lang: Lang | null;
   size: number;
   lines: number;
+  /** Modification time, used to reuse parse results when re-indexing. */
+  mtime?: number;
 }
+
+/**
+ * Per-project choices the user can make when the automatic analysis is not what they want.
+ * Stored by the app per folder; a team can also commit the same shape as `understandably.json`.
+ */
+export interface ProjectSettings {
+  /** gitignore-style patterns (relative to the project root) to leave out of the analysis. */
+  exclude: string[];
+  /** 'auto' skips tests only in very large projects. */
+  tests: 'auto' | 'include' | 'exclude';
+  /** Force the role of code the analyzer got wrong. `match` is a path glob, a class/function name, or `Class.method`. */
+  roleOverrides: { match: string; role: Role }[];
+  /** Extra entry points: `Class.method`, `function`, or `path/to/file.ext#name`. */
+  entryPoints: { symbol: string; label?: string }[];
+  /** Override the detected kind of program. */
+  projectKind?: ProjectKind;
+  /** Re-index automatically when files change on disk. */
+  autoRefresh: boolean;
+}
+
+export const DEFAULT_SETTINGS: ProjectSettings = { exclude: [], tests: 'auto', roleOverrides: [], entryPoints: [], autoRefresh: true };
 
 export interface ProjectSummary {
   root: string;
@@ -301,6 +328,9 @@ export interface ProjectSummary {
   entries: EntryPoint[];
   files: FileEntry[];
   warnings: string[];
+  settings: ProjectSettings;
+  /** Where team-shared settings were read from, if the repo has an understandably.json. */
+  repoSettingsFile?: string;
 }
 
 // ---------- Query results ----------

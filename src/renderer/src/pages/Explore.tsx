@@ -1,5 +1,6 @@
-import { useState, type CSSProperties } from 'react';
+import { useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { useStore } from '../store';
+import { api } from '../api';
 import { Guide } from '../components/Guide';
 import { FlowCanvas } from '../components/FlowCanvas';
 import { CodeView } from '../components/CodeView';
@@ -17,13 +18,70 @@ export function Explore() {
   const showFlow = useStore((s) => s.showFlow);
   const openCode = useStore((s) => s.openCode);
   const [inspector, setInspector] = useState(true);
+  const [widths, setWidths] = useState(() => {
+    try {
+      return { guide: 300, inspector: 340, ...JSON.parse(localStorage.getItem('ub.panelWidths') ?? '{}') };
+    } catch {
+      return { guide: 300, inspector: 340 };
+    }
+  });
+  const dragging = useRef<null | 'guide' | 'inspector'>(null);
+
+  /** Drag the borders between panels to resize them; widths are remembered. */
+  const startDrag = (which: 'guide' | 'inspector') => (e: ReactPointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    dragging.current = which;
+    const startX = e.clientX;
+    const start = widths[which];
+    const move = (ev: PointerEvent) => {
+      const dx = ev.clientX - startX;
+      const next = Math.round(Math.min(640, Math.max(200, which === 'guide' ? start + dx : start - dx)));
+      setWidths((w: typeof widths) => {
+        const nw = { ...w, [which]: next };
+        try {
+          localStorage.setItem('ub.panelWidths', JSON.stringify(nw));
+        } catch {
+          /* ignore */
+        }
+        return nw;
+      });
+    };
+    const up = () => {
+      dragging.current = null;
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
+  const selected = useStore((s) => s.selected);
+  const summary = useStore((s) => s.summary)!;
+  const dive = useStore((s) => s.dive);
+
+  /** The Code tab shows the last code you opened, or else the selected box (or the route's handler). */
+  const showCode = async () => {
+    // Reopen the last code view unless a different box has been selected since.
+    if (code && (!selected || selected === code.symbolId || selected === flowRoot)) {
+      openCode(code);
+      return;
+    }
+    const entry = summary.entries.find((e) => e.id === (selected ?? flowRoot));
+    const target = entry?.handlerId ?? selected ?? flowRoot;
+    if (!target) return;
+    const d = await api.symbol(target);
+    const s = d?.symbol;
+    if (s?.file) dive({ id: s.id, label: s.container ? `${s.container}.${s.name}` : s.name, role: s.role ?? 'other', file: s.file, line: s.range.sl });
+    else if (entry?.file) openCode({ file: entry.file, line: entry.line }, entry.label, 'route');
+  };
 
   const currentIdx = trail.length - 1;
 
   return (
-    <div className={`explore ${inspector ? '' : 'no-inspector'}`}>
+    <div className={`explore ${inspector ? '' : 'no-inspector'}`} style={{ '--guide-w': `${widths.guide}px`, '--inspector-w': `${widths.inspector}px` } as CSSProperties}>
       <Guide />
-      <section className="center" aria-label="Flow and code">
+      <section className="center" aria-label="Flow and code" style={{ position: 'relative' }}>
+        <div className="resize-handle" style={{ position: 'absolute', left: 0, top: 0, bottom: 0 }} onPointerDown={startDrag('guide')} title="Drag to resize" />
+        {inspector && <div className="resize-handle" style={{ position: 'absolute', right: 0, top: 0, bottom: 0 }} onPointerDown={startDrag('inspector')} title="Drag to resize" />}
         <div className="center-bar">
           <button className="icon-btn" onClick={goHome} disabled={!trail.length} title="Back to the starting point (the route or entry you picked)" aria-label="Home">
             <IconHome />
@@ -45,7 +103,7 @@ export function Explore() {
               <button className={center === 'flow' ? 'active' : ''} onClick={showFlow} title="Diagram of calls">
                 <IconFlow size={13} /> Flow
               </button>
-              <button className={center === 'code' ? 'active' : ''} disabled={!code} onClick={() => code && openCode(code)} title="Source code">
+              <button className={center === 'code' ? 'active' : ''} onClick={showCode} title="Source code of the selected box">
                 <IconCode size={13} /> Code
               </button>
             </div>

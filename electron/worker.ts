@@ -1,5 +1,7 @@
 import { parentPort } from 'node:worker_threads';
-import { handle } from './engine-host';
+import { handle, onHostEvent } from './engine-host';
+
+onHostEvent((event) => parentPort!.postMessage({ type: 'event', event }));
 
 // Engine work (parsing thousands of files) happens off the main process so the window never freezes.
 parentPort!.on('message', async (msg: { id: number; method: any; params: any }) => {

@@ -14,5 +14,10 @@ contextBridge.exposeInMainWorld('ub', {
     return () => ipcRenderer.removeListener('ub:progress', fn);
   },
   pathForFile: (file: File) => webUtils.getPathForFile(file),
+  onEvent: (cb: (e: unknown) => void) => {
+    const fn = (_e: unknown, ev: unknown) => cb(ev);
+    ipcRenderer.on('ub:event', fn);
+    return () => ipcRenderer.removeListener('ub:event', fn);
+  },
   initialFolder: () => ipcRenderer.invoke('ub:initialFolder'),
 });

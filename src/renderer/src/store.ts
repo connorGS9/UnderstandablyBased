@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Progress, ProjectSummary, Role } from '../../engine/types';
+import type { Progress, ProjectSettings, ProjectSummary, Role } from '../../engine/types';
 import { api } from './api';
 import { clearCaches } from './lib/cache';
 
@@ -42,6 +42,12 @@ export interface FlowPrefs {
 
 interface State extends Snapshot {
   summary?: ProjectSummary;
+  /** Bumped whenever the analysis is refreshed, so views re-fetch their data. */
+  revision: number;
+  /** Background re-index in progress (auto-refresh or settings change). */
+  updating: boolean;
+  updateError?: string;
+  settingsOpen: boolean;
   progress?: Progress;
   error?: string;
   opening: boolean;
@@ -68,6 +74,13 @@ interface State extends Snapshot {
   toggleExpanded(nodeId: string): void;
   setFlowPrefs(p: Partial<FlowPrefs>): void;
   setPalette(open: boolean): void;
+  setSettingsOpen(open: boolean): void;
+  /** Replace the analysis (after re-index) while keeping the user where they are. */
+  applySummary(summary: ProjectSummary): void;
+  reindex(): Promise<void>;
+  saveSettings(settings: ProjectSettings): Promise<void>;
+  /** Convenience edits used by the inspector. */
+  updateSettings(fn: (s: ProjectSettings) => ProjectSettings): Promise<void>;
 }
 
 const snapshotOf = (s: State): Snapshot => ({
@@ -112,6 +125,9 @@ export const useStore = create<State>((set, get) => {
     expanded: {},
     flowPrefs: loadPrefs(),
     paletteOpen: false,
+    revision: 0,
+    updating: false,
+    settingsOpen: false,
 
     async openProject(root) {
       set({ opening: true, error: undefined, progress: { phase: 'scan', done: 0, total: 0, message: 'Starting…' } });
@@ -248,6 +264,38 @@ export const useStore = create<State>((set, get) => {
 
     setPalette(paletteOpen) {
       set({ paletteOpen });
+    },
+
+    setSettingsOpen(settingsOpen) {
+      set({ settingsOpen });
+    },
+
+    applySummary(summary) {
+      clearCaches();
+      set((s) => ({ summary, revision: s.revision + 1, updating: false, updateError: undefined }));
+    },
+
+    async reindex() {
+      set({ updating: true, updateError: undefined });
+      try {
+        get().applySummary(await api.reindex());
+      } catch (e) {
+        set({ updating: false, updateError: (e as Error).message });
+      }
+    },
+
+    async saveSettings(settings) {
+      set({ updating: true, updateError: undefined });
+      try {
+        get().applySummary(await api.saveSettings(settings));
+      } catch (e) {
+        set({ updating: false, updateError: (e as Error).message });
+      }
+    },
+
+    async updateSettings(fn) {
+      const cur = get().summary?.settings;
+      if (cur) await get().saveSettings(fn(structuredClone(cur)));
     },
   };
 });

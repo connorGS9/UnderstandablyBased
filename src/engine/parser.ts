@@ -15,6 +15,9 @@ const EXT_LANG: Record<string, Lang> = {
   '.mts': 'typescript',
   '.cts': 'typescript',
   '.tsx': 'tsx',
+  // Single-file components: only the <script> block is analyzed (see prepareSource).
+  '.vue': 'typescript',
+  '.svelte': 'typescript',
   '.java': 'java',
   '.py': 'python',
   '.c': 'c',

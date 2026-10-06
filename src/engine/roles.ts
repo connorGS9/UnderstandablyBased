@@ -1,4 +1,5 @@
-import type { CodeSymbol, Role } from './types';
+import ignore from 'ignore';
+import type { CodeSymbol, ProjectSettings, Role } from './types';
 
 const ANNOTATION_ROLES: [RegExp, Role][] = [
   [/^(RestController|Controller|ApiController|RequestMapping)$/, 'controller'],
@@ -96,8 +97,11 @@ export function assignRoles(symbols: Map<string, CodeSymbol>) {
   };
 
   const SYSTEMS = /\.(c|cc|cpp|cxx|h|hh|hpp|hxx|rs)$/;
+  const UI_FILE = /\.(tsx|jsx|vue|svelte)$/;
   const pathRole = (file: string): { role: Role; reason: string } | undefined => {
     const r = pathRoleRaw(file);
+    // Frontend route folders hold screens, not HTTP handlers.
+    if (r?.role === 'controller' && UI_FILE.test(file)) return { role: 'view', reason: r.reason };
     // In systems code a "handler"/"api" file is not an HTTP controller.
     if (r?.role === 'controller' && SYSTEMS.test(file)) return undefined;
     return r;
@@ -115,6 +119,10 @@ export function assignRoles(symbols: Map<string, CodeSymbol>) {
     return undefined;
   };
 
+  for (const s of symbols.values()) {
+    s.role = undefined;
+    s.roleReason = undefined;
+  }
   const classes = new Map<string, { role: Role; reason: string }>();
   for (const s of symbols.values()) {
     if (s.kind === 'class' || s.kind === 'interface' || s.kind === 'struct' || s.kind === 'enum') {
@@ -163,4 +171,26 @@ export function assignRoles(symbols: Map<string, CodeSymbol>) {
 
 function capitalize(s: string) {
   return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/**
+ * Apply the user's role corrections. Later rules win. A rule on a class also applies to its members.
+ *  - `src/legacy/**` (contains / or *): every symbol in matching files
+ *  - `OrderService`: that class (and its methods) or that function
+ *  - `OrderService.place`: one method
+ */
+export function applyRoleOverrides(symbols: Map<string, CodeSymbol>, overrides: ProjectSettings['roleOverrides']) {
+  if (!overrides.length) return;
+  for (const o of overrides) {
+    const isPath = /[/*]/.test(o.match);
+    const glob = isPath ? ignore().add(o.match) : null;
+    for (const s of symbols.values()) {
+      const full = s.container ? `${s.container}.${s.name}` : s.name;
+      const hit = glob ? glob.ignores(s.file) : full === o.match || s.name === o.match && !s.container || s.container === o.match;
+      if (hit) {
+        s.role = o.role;
+        s.roleReason = `set by you (${o.match})`;
+      }
+    }
+  }
 }

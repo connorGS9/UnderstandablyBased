@@ -22,6 +22,9 @@
   --ok: #44d39a;
   --shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
   --canvas-dot: #262b38;
+  --canvas: #0d0f14;
+  --edge: #4a5263;
+  --minimap-mask: rgba(0, 0, 0, 0.3);
 
   --role-route: #a78bfa;
   --role-page: #f472b6;
@@ -54,22 +57,26 @@
 }
 
 :root[data-theme='light'] {
-  --bg: #f5f6f8;
-  --bg-elev: #ffffff;
-  --bg-elev-2: #f8f9fb;
-  --bg-hover: #eef0f4;
-  --bg-active: #e4e8f0;
-  --border: #e2e5eb;
-  --border-strong: #cfd4de;
-  --text: #171b24;
-  --text-dim: #545d70;
-  --text-faint: #8a92a3;
-  --accent: #5260e8;
-  --accent-strong: #3f4cd6;
-  --accent-weak: rgba(82, 96, 232, 0.1);
-  --focus: rgba(82, 96, 232, 0.45);
-  --shadow: 0 10px 30px rgba(20, 24, 40, 0.12);
-  --canvas-dot: #dfe3ea;
+  /* Soft gray "paper" instead of pure white: easier on the eyes for long reading sessions. */
+  --bg: #e9ebef;
+  --bg-elev: #f3f4f6;
+  --bg-elev-2: #eceef2;
+  --bg-hover: #e2e5ea;
+  --bg-active: #d9dde4;
+  --border: #d4d8df;
+  --border-strong: #bcc2cc;
+  --text: #1f2430;
+  --text-dim: #4d5567;
+  --text-faint: #7a8294;
+  --accent: #4f5bd5;
+  --accent-strong: #3e49c2;
+  --accent-weak: rgba(79, 91, 213, 0.12);
+  --focus: rgba(79, 91, 213, 0.45);
+  --shadow: 0 8px 24px rgba(30, 36, 50, 0.12);
+  --canvas: #e3e6eb;
+  --canvas-dot: #c9ced7;
+  --edge: #7d8596;
+  --minimap-mask: rgba(60, 66, 80, 0.12);
 
   --role-route: #7c3aed;
   --role-page: #db2777;
@@ -98,6 +105,46 @@
   --m-ws: #0d9488;
   --m-page: #db2777;
   color-scheme: light;
+}
+
+/* Diagram nodes are always dark "cards". In light mode this gives strong contrast against the
+   gray canvas without the glare of white boxes; the dark-theme palette is restored inside them. */
+:root[data-theme='light'] .node-surface {
+  --bg-elev: #262c39;
+  --bg-elev-2: #2f3646;
+  --bg-hover: #333b4c;
+  --border: #3a4253;
+  --border-strong: #454e61;
+  --text: #eef1f6;
+  --text-dim: #c0c7d4;
+  --text-faint: #98a1b2;
+  --role-route: #b9a2fb;
+  --role-page: #f78bc3;
+  --role-entry: #4fe0cb;
+  --role-middleware: #fcc94a;
+  --role-controller: #78b3fb;
+  --role-service: #4fdfa8;
+  --role-repository: #fca36a;
+  --role-model: #45daf0;
+  --role-view: #f78bc3;
+  --role-client: #9aa3fa;
+  --role-util: #a8b4c6;
+  --role-config: #a8b4c6;
+  --role-test: #8a96a8;
+  --role-table: #fad54d;
+  --role-external: #fc8a9c;
+  --role-channel: #4fe0cb;
+  --role-other: #a3abbb;
+  --m-get: #4fdfa8;
+  --m-post: #78b3fb;
+  --m-put: #fcc94a;
+  --m-patch: #cf9cfd;
+  --m-delete: #f98b8b;
+  --m-any: #a8b4c6;
+  --m-ws: #4fe0cb;
+  --m-page: #f78bc3;
+  color: var(--text);
+  box-shadow: 0 2px 6px rgba(20, 24, 34, 0.18);
 }
 
 * {
@@ -944,8 +991,9 @@ select {
   position: absolute;
   inset: 0;
 }
-.flow-wrap .react-flow__background {
-  background: var(--bg);
+.flow-wrap .react-flow__background,
+.diagram-canvas .react-flow__background {
+  background: var(--canvas);
 }
 .flow-toolbar {
   position: absolute;
@@ -979,8 +1027,10 @@ select {
 }
 .fnode {
   position: relative;
-  width: 100%;
-  height: 100%;
+  width: max-content;
+  min-width: 150px;
+  max-width: 300px;
+  min-height: 54px;
   border-radius: 10px;
   background: var(--bg-elev);
   border: 1px solid var(--border-strong);
@@ -1009,7 +1059,7 @@ select {
 .fnode .content {
   flex: 1;
   min-width: 0;
-  padding: 6px 10px 6px 9px;
+  padding: 7px 14px 7px 10px;
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -1018,9 +1068,13 @@ select {
 .fnode .title {
   font-weight: 600;
   font-size: 12.5px;
+  line-height: 1.3;
+  /* Long names wrap (breaking at dots and camelCase-friendly points) instead of being cut off. */
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .fnode .sub {
   font-size: 10.5px;
@@ -1237,8 +1291,10 @@ select {
   overflow: auto;
 }
 .dnode {
-  width: 100%;
-  height: 100%;
+  width: max-content;
+  min-width: 150px;
+  max-width: 280px;
+  min-height: 54px;
   border-radius: 10px;
   border: 1px solid var(--border-strong);
   background: var(--bg-elev);
@@ -1258,13 +1314,25 @@ select {
 .dnode .content {
   flex: 1;
   min-width: 0;
-  padding: 6px 10px;
+  padding: 7px 14px 7px 10px;
   display: flex;
   flex-direction: column;
   justify-content: center;
 }
+.dnode .dtitle {
+  font-weight: 600;
+  font-size: 12.5px;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
 .table-node {
-  width: 100%;
+  width: max-content;
+  min-width: 220px;
+  max-width: 420px;
   border-radius: 10px;
   border: 1px solid var(--border-strong);
   background: var(--bg-elev);
@@ -1282,8 +1350,9 @@ select {
   align-items: center;
   gap: 7px;
   height: 34px;
-  padding: 0 10px;
-  background: color-mix(in srgb, var(--role-table) 12%, var(--bg-elev-2));
+  padding: 0 12px 0 10px;
+  white-space: nowrap;
+  background: color-mix(in srgb, var(--role-table) 14%, var(--bg-elev-2));
   border-bottom: 1px solid var(--border);
   font-weight: 700;
 }
@@ -1302,9 +1371,10 @@ select {
 }
 .table-node .ttype {
   margin-left: auto;
+  padding-left: 14px;
   color: var(--text-faint);
   font-size: 10.5px;
-  max-width: 110px;
+  max-width: 180px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1326,8 +1396,9 @@ select {
   color: var(--role-service);
 }
 .route-node {
-  height: 100%;
-  width: 100%;
+  width: max-content;
+  min-width: 90px;
+  max-width: 360px;
   border-radius: 9px;
   border: 1px solid var(--border-strong);
   background: var(--bg-elev);
@@ -1449,4 +1520,93 @@ select {
   background: var(--bg);
   padding: 0 6px;
   font-size: 12px;
+}
+
+/* ---------- Dialogs ---------- */
+.dialog {
+  width: min(640px, 100% - 32px);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  border-radius: 13px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.dialog-head,
+.dialog-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.dialog-foot {
+  border-bottom: 0;
+  border-top: 1px solid var(--border);
+  justify-content: flex-end;
+}
+.dialog-body {
+  overflow: auto;
+  padding: 4px 16px 12px;
+}
+.setting {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.setting:last-child {
+  border-bottom: 0;
+}
+.setting-label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.setting-help {
+  margin: 0 0 8px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg);
+  color: var(--text);
+  resize: vertical;
+  outline: none;
+}
+.textarea:focus-visible {
+  outline: 2px solid var(--focus);
+}
+.updating-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* ---------- Resizable panels ---------- */
+.resize-handle {
+  position: relative;
+  width: 0;
+  z-index: 6;
+}
+.resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  width: 6px;
+  cursor: col-resize;
+}
+.resize-handle:hover::after,
+.resize-handle.dragging::after {
+  background: var(--accent);
+  opacity: 0.5;
 }

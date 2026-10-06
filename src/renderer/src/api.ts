@@ -1,4 +1,4 @@
-import type { FlowOptions, RecentProject, UBApi } from '../../shared/api';
+import type { FlowOptions, HostEvent, RecentProject, UBApi } from '../../shared/api';
 import type { Progress } from '../../engine/types';
 
 interface Bridge {
@@ -12,6 +12,7 @@ interface Bridge {
   onProgress(cb: (p: Progress) => void): () => void;
   pathForFile(file: File): string;
   initialFolder(): Promise<string | null>;
+  onEvent(cb: (e: HostEvent) => void): () => void;
 }
 
 function electronApi(b: Bridge): UBApi {
@@ -19,6 +20,9 @@ function electronApi(b: Bridge): UBApi {
     platform: 'electron',
     pickFolder: () => b.pickFolder(),
     open: (root) => b.call('open', { root }),
+    reindex: () => b.call('reindex', {}),
+    saveSettings: (settings) => b.call('saveSettings', { settings }),
+    onEvent: (cb) => b.onEvent(cb),
     flow: (rootId, opts?: FlowOptions) => b.call('flow', { rootId, opts }),
     symbol: (id) => b.call('symbol', { id }),
     file: (path) => b.call('file', { path }),
@@ -46,6 +50,13 @@ function webApi(): UBApi {
     platform: 'web',
     pickFolder: async () => null,
     open: (root) => post('open', { root }),
+    reindex: () => post('reindex'),
+    saveSettings: (settings) => post('saveSettings', { settings }),
+    onEvent: (cb) => {
+      const es = new EventSource('/api/events');
+      es.onmessage = (e) => cb(JSON.parse(e.data));
+      return () => es.close();
+    },
     flow: (rootId, opts) => post('flow', { rootId, opts }),
     symbol: (id) => post('symbol', { id }),
     file: (path) => post('file', { path }),
@@ -55,7 +66,11 @@ function webApi(): UBApi {
     forgetRecent: (root) => post('forgetRecent', { root }),
     openInEditor: async () => {},
     reveal: async () => {},
-    initialFolder: async () => new URLSearchParams(location.search).get('open'),
+    initialFolder: async () => {
+      const f = new URLSearchParams(location.search).get('open');
+      if (f) history.replaceState(null, '', location.pathname);
+      return f;
+    },
     onProgress: (cb) => {
       const es = new EventSource('/api/progress');
       es.onmessage = (e) => cb(JSON.parse(e.data));

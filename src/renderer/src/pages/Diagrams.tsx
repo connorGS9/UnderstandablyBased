@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
+import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -16,7 +16,7 @@ import {
 import { useStore, type DiagramTab } from '../store';
 import type { DbTable, DiagramEdge, DiagramNode, Diagrams as DiagramData, RouteTreeNode, Role } from '../../../engine/types';
 import { loadDiagrams } from '../lib/cache';
-import { layoutGraph, textWidth } from '../lib/layout';
+import { useMeasuredLayout } from '../lib/layout';
 import { ROLES, ROLE_RANK, roleColor } from '../lib/roles';
 import { MethodBadge, RoleDot, shortFile } from '../components/Bits';
 import { entryRole } from '../components/Guide';
@@ -34,12 +34,13 @@ export function Diagrams() {
   const setTab = useStore((s) => s.setDiagramTab);
   const [data, setData] = useState<DiagramData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const revision = useStore((s) => s.revision);
 
   useEffect(() => {
     loadDiagrams()
       .then(setData)
       .catch((e) => setError(String(e.message ?? e)));
-  }, []);
+  }, [revision]);
 
   const help = TABS.find((t) => t.key === tab)!.help;
 
@@ -81,6 +82,17 @@ export function Diagrams() {
   );
 }
 
+/** Fit the whole diagram on screen once each new layout lands. */
+function useFitOnLayout(key: string | undefined) {
+  const rf = useReactFlow();
+  const done = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!key || done.current === key) return;
+    done.current = key;
+    requestAnimationFrame(() => rf.fitView({ padding: 0.08, maxZoom: 1 }));
+  }, [key, rf]);
+}
+
 // ---------------- generic architecture graph ----------------
 
 const shortSub = (s: string) => (s.includes('/') ? s.split('/').slice(-2).join('/') : s);
@@ -89,7 +101,7 @@ type DNodeData = DiagramNode & { selected: boolean; dim: boolean } & Record<stri
 
 const DBox = memo(function DBox({ data }: NodeProps<Node<DNodeData>>) {
   return (
-    <div className={`dnode ${data.selected ? 'selected' : ''}`} style={{ '--rc': roleColor(data.role), opacity: data.dim ? 0.3 : 1 } as CSSProperties} title={`${data.label}\n${data.sublabel ?? ''}\n${ROLES[data.role].label}`}>
+    <div className={`dnode node-surface ${data.selected ? 'selected' : ''}`} style={{ '--rc': roleColor(data.role), opacity: data.dim ? 0.3 : 1 } as CSSProperties} title={`${data.label}\n${data.sublabel ?? ''}\n${ROLES[data.role].label}`}>
       <Handle type="target" position={Position.Left} />
       <div className="stripe" />
       <div className="content">
@@ -97,7 +109,7 @@ const DBox = memo(function DBox({ data }: NodeProps<Node<DNodeData>>) {
           {ROLES[data.role].short}
           {data.size && data.size > 1 && !data.id.startsWith('entries:') ? ` · ${data.size}` : ''}
         </span>
-        <span className="ellipsis" style={{ fontWeight: 600, fontSize: 12.5 }}>
+        <span className="dtitle">
           {data.label}
         </span>
         {data.sublabel && (
@@ -114,32 +126,18 @@ const DBox = memo(function DBox({ data }: NodeProps<Node<DNodeData>>) {
 const graphNodeTypes = { box: DBox };
 
 function GraphDiagram({ nodes, edges, partitions, emptyText }: { nodes: DiagramNode[]; edges: DiagramEdge[]; partitions?: boolean; emptyText: string }) {
-  const [pos, setPos] = useState<Map<string, { x: number; y: number }> | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [hidden, setHidden] = useState<Set<Role>>(new Set(['util', 'config']));
-  const rf = useReactFlow();
-  const widthOf = (n: DiagramNode) => Math.round(Math.min(260, Math.max(150, Math.max(textWidth(n.label), textWidth(shortSub(n.sublabel ?? ''), '10.5px monospace')) + 34)));
 
   const visible = useMemo(() => nodes.filter((n) => !hidden.has(n.role)), [nodes, hidden]);
   const visIds = useMemo(() => new Set(visible.map((n) => n.id)), [visible]);
   const visEdges = useMemo(() => edges.filter((e) => visIds.has(e.from) && visIds.has(e.to)), [edges, visIds]);
 
-  useEffect(() => {
-    let cancelled = false;
-    layoutGraph(
-      visible.map((n) => ({ id: n.id, width: widthOf(n), height: 54, partition: ROLE_RANK[n.role] })),
-      visEdges.map((e) => ({ id: e.id, from: e.from, to: e.to })),
-      { partitions, layerGap: 90, nodeGap: 14 },
-    ).then((p) => {
-      if (cancelled) return;
-      setPos(p);
-      requestAnimationFrame(() => rf.fitView({ padding: 0.1, maxZoom: 1 }));
-    });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, visEdges, partitions]);
+  const ids = useMemo(() => visible.map((n) => n.id), [visible]);
+  const layoutEdges = useMemo(() => visEdges.map((e) => ({ id: e.id, from: e.from, to: e.to })), [visEdges]);
+  const roleOf = useMemo(() => new Map(visible.map((n) => [n.id, n.role])), [visible]);
+  const layout = useMeasuredLayout(ids.join('|'), ids, layoutEdges, { partitions, layerGap: 90, nodeGap: 14 }, (id) => ROLE_RANK[roleOf.get(id) ?? 'other']);
+  useFitOnLayout(layout?.key);
 
   const neighbors = useMemo(() => {
     if (!selected) return null;
@@ -156,32 +154,32 @@ function GraphDiagram({ nodes, edges, partitions, emptyText }: { nodes: DiagramN
       visible.map((n) => ({
         id: n.id,
         type: 'box',
-        position: pos?.get(n.id) ?? { x: 0, y: 0 },
+        position: layout?.pos.get(n.id) ?? { x: 0, y: 0 },
         data: { ...n, selected: n.id === selected, dim: !!neighbors && !neighbors.has(n.id) },
-        style: { width: widthOf(n), height: 54 },
+        style: layout ? undefined : { visibility: 'hidden' as const },
       })),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [visible, pos, selected, neighbors],
+    [visible, layout, selected, neighbors],
   );
   const maxW = Math.max(1, ...visEdges.map((e) => e.weight));
   const rfEdges: Edge[] = useMemo(
     () =>
       visEdges.map((e) => {
         const on = !neighbors || (neighbors.has(e.from) && neighbors.has(e.to) && (e.from === selected || e.to === selected));
-        const color = e.kind === 'reads' || e.kind === 'writes' ? 'var(--role-table)' : e.kind === 'http' ? 'var(--role-external)' : e.kind === 'publishes' || e.kind === 'subscribes' || e.kind === 'uses' ? 'var(--role-channel)' : 'var(--text-faint)';
+        const color = e.kind === 'reads' || e.kind === 'writes' ? 'var(--role-table)' : e.kind === 'http' ? 'var(--role-external)' : e.kind === 'publishes' || e.kind === 'subscribes' || e.kind === 'uses' ? 'var(--role-channel)' : 'var(--edge)';
         return {
           id: e.id,
           source: e.from,
           target: e.to,
           type: 'smoothstep',
+          hidden: !layout,
           markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12, color },
-          style: { stroke: color, strokeWidth: 1 + Math.log2(1 + (4 * e.weight) / maxW), opacity: on ? 0.85 : 0.08 },
+          style: { stroke: color, strokeWidth: 1 + Math.log2(1 + (4 * e.weight) / maxW), opacity: on ? 0.9 : 0.1 },
           label: e.kind === 'reads' || e.kind === 'writes' ? e.kind : undefined,
           labelStyle: { fill: 'var(--text-dim)', fontSize: 10 },
           labelBgStyle: { fill: 'var(--bg)' },
         };
       }),
-    [visEdges, neighbors, selected, maxW],
+    [visEdges, neighbors, selected, maxW, layout],
   );
 
   const sel = nodes.find((n) => n.id === selected);
@@ -301,7 +299,6 @@ function GraphSide({ node, edges, nodes }: { node: DiagramNode; edges: DiagramEd
 
 // ---------------- database ER diagram ----------------
 
-const ROW_H = 22;
 const HEAD_H = 34;
 const MAX_COLS = 18;
 
@@ -311,7 +308,7 @@ const TableBox = memo(function TableBox({ data }: NodeProps<Node<TableData>>) {
   const t = data.table;
   const cols = t.columns.slice(0, MAX_COLS);
   return (
-    <div className={`table-node ${data.selected ? 'selected' : ''}`} style={{ opacity: data.dim ? 0.3 : 1 }}>
+    <div className={`table-node node-surface ${data.selected ? 'selected' : ''}`} style={{ opacity: data.dim ? 0.3 : 1 }}>
       <div className="thead">
         <IconDatabase size={14} style={{ color: 'var(--role-table)' }} />
         <span className="ellipsis grow">{t.name}</span>
@@ -341,14 +338,9 @@ const TableBox = memo(function TableBox({ data }: NodeProps<Node<TableData>>) {
 
 const tableTypes = { table: TableBox };
 
-function tableHeight(t: DbTable) {
-  return HEAD_H + Math.max(1, Math.min(t.columns.length, MAX_COLS) + (t.columns.length > MAX_COLS ? 1 : 0)) * ROW_H + 2;
-}
 
 function DatabaseDiagram({ db }: { db: DiagramData['database'] }) {
-  const [pos, setPos] = useState<Map<string, { x: number; y: number }> | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
-  const rf = useReactFlow();
   const byName = useMemo(() => new Map(db.tables.map((t) => [t.name.toLowerCase(), t])), [db]);
 
   const fkEdges = useMemo(() => {
@@ -365,24 +357,10 @@ function DatabaseDiagram({ db }: { db: DiagramData['database'] }) {
     return out;
   }, [db, byName]);
 
-  const widthOf = (t: DbTable) => Math.round(Math.min(340, Math.max(220, textWidth(t.name, '700 12.5px Inter') + 90, ...t.columns.slice(0, MAX_COLS).map((c) => textWidth(c.name + c.type, '11.5px monospace') + 70))));
-
-  useEffect(() => {
-    let cancelled = false;
-    layoutGraph(
-      db.tables.map((t) => ({ id: t.name, width: widthOf(t), height: tableHeight(t) })),
-      fkEdges.map((e) => ({ id: e.id, from: e.from, to: e.to })),
-      { layerGap: 90, nodeGap: 30 },
-    ).then((p) => {
-      if (cancelled) return;
-      setPos(p);
-      requestAnimationFrame(() => rf.fitView({ padding: 0.08, maxZoom: 1 }));
-    });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [db, fkEdges]);
+  const tableIds = useMemo(() => db.tables.map((t) => t.name), [db]);
+  const layoutEdges = useMemo(() => fkEdges.map((e) => ({ id: e.id, from: e.from, to: e.to })), [fkEdges]);
+  const layout = useMeasuredLayout(tableIds.join('|'), tableIds, layoutEdges, { layerGap: 90, nodeGap: 30 });
+  useFitOnLayout(layout?.key);
 
   const related = useMemo(() => {
     if (!selected) return null;
@@ -394,13 +372,18 @@ function DatabaseDiagram({ db }: { db: DiagramData['database'] }) {
     return s;
   }, [selected, fkEdges]);
 
-  const nodes: Node<TableData>[] = db.tables.map((t) => ({
-    id: t.name,
-    type: 'table',
-    position: pos?.get(t.name) ?? { x: 0, y: 0 },
-    data: { table: t, selected: selected === t.name, dim: !!related && !related.has(t.name), used: new Set((db.usage[t.name.toLowerCase()] ?? []).map((u) => u.id)).size },
-    style: { width: widthOf(t) },
-  }));
+  // Memoized: React Flow forgets measured sizes when it receives new node objects.
+  const nodes: Node<TableData>[] = useMemo(
+    () =>
+      db.tables.map((t) => ({
+        id: t.name,
+        type: 'table',
+        position: layout?.pos.get(t.name) ?? { x: 0, y: 0 },
+        data: { table: t, selected: selected === t.name, dim: !!related && !related.has(t.name), used: new Set((db.usage[t.name.toLowerCase()] ?? []).map((u) => u.id)).size },
+        style: layout ? undefined : { visibility: 'hidden' as const },
+      })),
+    [db, layout, selected, related],
+  );
   const edges: Edge[] = fkEdges.map((e) => {
     const on = !related || (related.has(e.from) && related.has(e.to) && (e.from === selected || e.to === selected));
     return {
@@ -410,6 +393,7 @@ function DatabaseDiagram({ db }: { db: DiagramData['database'] }) {
       sourceHandle: `out-${e.fromCol}`,
       targetHandle: e.toCol ? `in-${e.toCol}` : 'in-head',
       type: 'smoothstep',
+      hidden: !layout,
       markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12, color: 'var(--role-model)' },
       style: { stroke: 'var(--role-model)', strokeWidth: 1.5, opacity: on ? 0.85 : 0.1 },
     };
@@ -508,7 +492,7 @@ const RouteBox = memo(function RouteBox({ data }: NodeProps<Node<RouteData>>) {
   const summary = useStore((s) => s.summary)!;
   const n = data.node;
   return (
-    <div className="route-node" style={{ borderColor: n.routes.length ? 'color-mix(in srgb, var(--role-route) 55%, var(--border-strong))' : undefined }}>
+    <div className="route-node node-surface" style={{ borderColor: n.routes.length ? 'color-mix(in srgb, var(--role-route) 55%, var(--border-strong))' : undefined }}>
       <Handle type="target" position={Position.Left} />
       <span className="seg-name ellipsis" title={n.fullPath}>
         {n.segment === '/' ? '/' : '/' + n.segment}
@@ -533,15 +517,12 @@ const RouteBox = memo(function RouteBox({ data }: NodeProps<Node<RouteData>>) {
 const routeTypes = { route: RouteBox };
 
 function RouteDiagram({ tree }: { tree: RouteTreeNode }) {
-  const rf = useReactFlow();
-  const [pos, setPos] = useState<Map<string, { x: number; y: number }> | null>(null);
   const flat = useMemo(() => {
-    const nodes: { id: string; node: RouteTreeNode; w: number; h: number }[] = [];
+    const nodes: { id: string; node: RouteTreeNode }[] = [];
     const edges: { id: string; from: string; to: string }[] = [];
     const walk = (n: RouteTreeNode, parent?: string) => {
       const id = n.fullPath;
-      const w = Math.round(Math.max(110, textWidth('/' + n.segment, '600 12px monospace') + 24, n.routes.length * 46 + 20));
-      nodes.push({ id, node: n, w: Math.min(w, 320), h: n.routes.length ? 50 : 32 });
+      nodes.push({ id, node: n });
       if (parent) edges.push({ id: `${parent}->${id}`, from: parent, to: id });
       n.children.forEach((c) => walk(c, id));
     };
@@ -549,21 +530,14 @@ function RouteDiagram({ tree }: { tree: RouteTreeNode }) {
     return { nodes, edges };
   }, [tree]);
 
-  useEffect(() => {
-    let cancelled = false;
-    layoutGraph(
-      flat.nodes.map((n) => ({ id: n.id, width: n.w, height: n.h })),
-      flat.edges,
-      { layerGap: 50, nodeGap: 8 },
-    ).then((p) => {
-      if (cancelled) return;
-      setPos(p);
-      requestAnimationFrame(() => rf.fitView({ padding: 0.08, maxZoom: 1 }));
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [flat, rf]);
+  const routeIds = useMemo(() => flat.nodes.map((n) => n.id), [flat]);
+  const layout = useMeasuredLayout(routeIds.join('|'), routeIds, flat.edges, { layerGap: 50, nodeGap: 10 });
+  useFitOnLayout(layout?.key);
+  const routeNodes = useMemo(
+    () => flat.nodes.map((n) => ({ id: n.id, type: 'route', position: layout?.pos.get(n.id) ?? { x: 0, y: 0 }, data: { node: n.node }, style: layout ? undefined : { visibility: 'hidden' as const } })),
+    [flat, layout],
+  );
+  const routeEdges = useMemo(() => flat.edges.map((e) => ({ id: e.id, source: e.from, target: e.to, type: 'smoothstep', hidden: !layout, style: { stroke: 'var(--edge)', strokeWidth: 1.4 } })), [flat, layout]);
 
   if (flat.nodes.length <= 1 && !tree.routes.length)
     return (
@@ -580,8 +554,8 @@ function RouteDiagram({ tree }: { tree: RouteTreeNode }) {
     <div className="diagram-body" style={{ gridTemplateColumns: '1fr' }}>
       <div className="diagram-canvas">
         <ReactFlow
-          nodes={flat.nodes.map((n) => ({ id: n.id, type: 'route', position: pos?.get(n.id) ?? { x: 0, y: 0 }, data: { node: n.node }, style: { width: n.w, height: n.h } }))}
-          edges={flat.edges.map((e) => ({ id: e.id, source: e.from, target: e.to, type: 'smoothstep', style: { stroke: 'var(--border-strong)', strokeWidth: 1.4 } }))}
+          nodes={routeNodes}
+          edges={routeEdges}
           nodeTypes={routeTypes}
           minZoom={0.1}
           proOptions={{ hideAttribution: true }}

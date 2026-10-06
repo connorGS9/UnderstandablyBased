@@ -1,4 +1,4 @@
-import type { Diagrams, FileView, FlowGraph, Progress, ProjectSummary, SearchHit, SymbolDetail } from '../engine/types';
+import type { Diagrams, FileView, FlowGraph, Progress, ProjectSettings, ProjectSummary, SearchHit, SymbolDetail } from '../engine/types';
 
 export interface FlowOptions {
   depth?: number;
@@ -21,6 +21,12 @@ export interface UBApi {
   platform: 'electron' | 'web';
   pickFolder(): Promise<string | null>;
   open(root: string): Promise<ProjectSummary>;
+  /** Re-analyze the open project (unchanged files are not re-parsed). */
+  reindex(): Promise<ProjectSummary>;
+  /** Save settings for the open project and re-analyze with them. */
+  saveSettings(settings: ProjectSettings): Promise<ProjectSummary>;
+  /** Background events: auto-refresh after files change on disk. */
+  onEvent(cb: (e: HostEvent) => void): () => void;
   flow(rootId: string, opts?: FlowOptions): Promise<FlowGraph>;
   symbol(id: string): Promise<SymbolDetail | null>;
   file(path: string): Promise<FileView>;
@@ -38,4 +44,6 @@ export interface UBApi {
 }
 
 /** Methods the engine worker understands (shared by Electron worker and the web dev server). */
-export type EngineMethod = 'open' | 'flow' | 'symbol' | 'file' | 'search' | 'diagrams';
+export type EngineMethod = 'open' | 'reindex' | 'saveSettings' | 'flow' | 'symbol' | 'file' | 'search' | 'diagrams';
+
+export type HostEvent = { type: 'updating' } | { type: 'updated'; summary: ProjectSummary } | { type: 'update-failed'; error: string };

@@ -1,10 +1,10 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { api } from '../api';
 import { useStore } from '../store';
-import type { CallRef, DbTable, EntryPoint, SymbolDetail } from '../../../engine/types';
+import type { CallRef, CodeSymbol, DbTable, EntryPoint, Role, SymbolDetail } from '../../../engine/types';
 import { CONFIDENCE, ROLES, roleColor } from '../lib/roles';
 import { MethodBadge, RoleChip, RoleDot, shortFile } from './Bits';
-import { IconCode, IconExternal, IconFlow } from './Icons';
+import { IconCode, IconExternal, IconFlow, IconPin } from './Icons';
 import { entryRole } from './Guide';
 import { loadDiagrams } from '../lib/cache';
 
@@ -21,6 +21,7 @@ export function Inspector() {
   const [detail, setDetail] = useState<SymbolDetail | null>(null);
   const [table, setTable] = useState<DbTable | null>(null);
   const [loading, setLoading] = useState(false);
+  const revision = useStore((s) => s.revision);
 
   useEffect(() => {
     let cancelled = false;
@@ -41,7 +42,7 @@ export function Inspector() {
     return () => {
       cancelled = true;
     };
-  }, [symbolId]);
+  }, [symbolId, revision]);
 
   if (!selected) {
     return (
@@ -102,6 +103,8 @@ function EntryHeader({ entry }: { entry: EntryPoint }) {
               ? `A separate program starts here at ${entry.handlerName ?? 'main'}.`
               : entry.kind === 'channel'
                 ? 'Processes and functions connect through this channel. The flow shows who writes to it and who reads from it.'
+                : entry.kind === 'custom'
+                  ? `You pinned ${entry.handlerName} as an entry point. Unpin it from Project settings.`
                 : `The framework calls ${entry.handlerName} for you (${entry.framework}).`}
       </p>
       {!!entry.middleware?.length && (
@@ -149,6 +152,7 @@ function SymbolInfo({ detail, isHandler }: { detail: SymbolDetail; isHandler: bo
         <div className="explain" style={{ '--rc': roleColor(role), marginTop: 10 } as CSSProperties}>
           <b style={{ color: 'var(--text)' }}>{ROLES[role].label}.</b> {ROLES[role].explain}
           {s.roleReason && <div className="faint" style={{ marginTop: 4 }}>Why we think so: {s.roleReason}.</div>}
+          {!s.id.startsWith('file:') && s.kind !== 'handler' && <RoleFixer symbol={s} />}
         </div>
         <div className="actions" style={{ marginTop: 10 }}>
           <button className="btn small" onClick={() => dive({ id: s.id, label, role, file: s.file, line: s.range.sl })}>
@@ -157,6 +161,7 @@ function SymbolInfo({ detail, isHandler }: { detail: SymbolDetail; isHandler: bo
           <button className="btn small" onClick={() => traceFrom(s.id, label, role)} title="Draw a new flow that starts at this function">
             <IconFlow size={14} /> Trace from here
           </button>
+          {s.kind !== 'handler' && !s.id.startsWith('file:') && !isHandler && <PinButton spec={s.container ? `${s.container}.${s.name}` : s.name} />}
           {api.platform === 'electron' && (
             <button className="btn small ghost" onClick={() => api.openInEditor(s.file, s.range.sl)}>
               <IconExternal size={14} /> Editor
@@ -295,5 +300,67 @@ function SinkDetail({ detail, table }: { detail: SymbolDetail; table: DbTable | 
       )}
       <RefList title={`Used by (${detail.callers.length})`} refs={detail.callers} onPick={(r) => r.file && dive({ id: r.id, label: refLabel(r), role: r.role, file: r.file, line: r.line })} empty="No code found that uses this." />
     </>
+  );
+}
+
+const FIXABLE_ROLES: Role[] = ['controller', 'service', 'repository', 'model', 'middleware', 'client', 'view', 'entry', 'util', 'config', 'test', 'other'];
+
+/** "Wrong role?" — lets the user correct the classification; saved in project settings. */
+function RoleFixer({ symbol }: { symbol: CodeSymbol }) {
+  const updateSettings = useStore((st) => st.updateSettings);
+  const updating = useStore((st) => st.updating);
+  const [open, setOpen] = useState(false);
+  // Correct the whole class when the symbol belongs to one; methods inherit their class's role.
+  const match = symbol.container ?? symbol.name;
+  if (!open)
+    return (
+      <button className="link" style={{ fontSize: 12, marginTop: 6 }} onClick={() => setOpen(true)}>
+        Wrong role?
+      </button>
+    );
+  return (
+    <div className="row" style={{ marginTop: 8, flexWrap: 'wrap' }}>
+      <span style={{ fontSize: 12 }}>
+        Treat <b className="mono">{match}</b> as
+      </span>
+      <select
+        className="select"
+        defaultValue=""
+        disabled={updating}
+        onChange={(e) => {
+          const role = e.target.value as Role;
+          if (!role) return;
+          updateSettings((st) => ({ ...st, roleOverrides: [...st.roleOverrides.filter((o) => o.match !== match), { match, role }] }));
+          setOpen(false);
+        }}
+      >
+        <option value="" disabled>
+          choose…
+        </option>
+        {FIXABLE_ROLES.map((r) => (
+          <option key={r} value={r}>
+            {ROLES[r].label}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+/** Pin a function the analyzer did not detect as an entry point (e.g. a CLI command or message handler). */
+function PinButton({ spec }: { spec: string }) {
+  const summary = useStore((st) => st.summary)!;
+  const updateSettings = useStore((st) => st.updateSettings);
+  const pinned = summary.settings.entryPoints.some((e) => e.symbol === spec);
+  return (
+    <button
+      className="btn small ghost"
+      title={pinned ? 'Remove from your pinned entry points' : 'Add to the guide as an entry point you can start flows from'}
+      onClick={() =>
+        updateSettings((st) => ({ ...st, entryPoints: pinned ? st.entryPoints.filter((e) => e.symbol !== spec) : [...st.entryPoints, { symbol: spec }] }))
+      }
+    >
+      <IconPin size={14} /> {pinned ? 'Unpin' : 'Pin as entry point'}
+    </button>
   );
 }

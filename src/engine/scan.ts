@@ -70,6 +70,9 @@ const CONFIG_FILES = new Set([
   'application.yaml',
 ]);
 
+/** Directory names that never contain project source. Exported for the file watcher. */
+export const SKIPPED_DIRS = ALWAYS_SKIP;
+
 export const MAX_FILE_BYTES = 1_500_000;
 export const MAX_FILES = 25_000;
 
@@ -81,7 +84,8 @@ export interface ScanResult {
   truncated: boolean;
 }
 
-export async function scanProject(root: string, onProgress?: (n: number) => void): Promise<ScanResult> {
+export async function scanProject(root: string, onProgress?: (n: number) => void, exclude: string[] = []): Promise<ScanResult> {
+  const userIgnore = exclude.length ? ignore().add(exclude) : null;
   const files: FileEntry[] = [];
   const extras: string[] = [];
   let skippedLarge = 0;
@@ -122,7 +126,7 @@ export async function scanProject(root: string, onProgress?: (n: number) => void
       if (e.isSymbolicLink()) continue;
       if (e.isDirectory()) {
         if (ALWAYS_SKIP.has(e.name) || (e.name.startsWith('.') && e.name !== '.github')) continue;
-        if (isIgnored(relPath, true)) continue;
+        if (isIgnored(relPath, true) || userIgnore?.ignores(relPath + '/')) continue;
         await walkDir(relPath, igs);
         continue;
       }
@@ -131,11 +135,14 @@ export async function scanProject(root: string, onProgress?: (n: number) => void
       const lower = e.name.toLowerCase();
       const wanted = CONFIG_FILES.has(e.name) || lower.endsWith('.sql') || lower.endsWith('.prisma') || lower.endsWith('.csproj') || lower.endsWith('.uproject');
       if (!lang && !wanted) continue;
-      if (isIgnored(relPath, false)) continue;
+      if (isIgnored(relPath, false) || userIgnore?.ignores(relPath)) continue;
       if (/\.min\.(js|css)$|\.bundle\.js$|\.d\.ts$|\.pb\.(go|cc|h)$|_pb2\.py$|\.generated\./.test(lower)) continue;
       let size = 0;
+      let mtime = 0;
       try {
-        size = (await fs.stat(path.join(root, relPath))).size;
+        const st = await fs.stat(path.join(root, relPath));
+        size = st.size;
+        mtime = st.mtimeMs;
       } catch {
         continue;
       }
@@ -144,7 +151,7 @@ export async function scanProject(root: string, onProgress?: (n: number) => void
           skippedLarge++;
           continue;
         }
-        files.push({ path: relPath, lang, size, lines: 0 });
+        files.push({ path: relPath, lang, size, lines: 0, mtime });
         if (files.length % 200 === 0) onProgress?.(files.length);
         if (files.length >= MAX_FILES) {
           truncated = true;

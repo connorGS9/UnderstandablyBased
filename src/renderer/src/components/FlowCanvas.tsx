@@ -16,13 +16,12 @@ import {
 import { api } from '../api';
 import { useStore } from '../store';
 import type { FlowGraph, FlowNode } from '../../../engine/types';
-import { layoutGraph, textWidth } from '../lib/layout';
+import { boundsOf, useMeasuredLayout, type MeasuredLayout } from '../lib/layout';
 import { CONFIDENCE, ROLES, roleColor } from '../lib/roles';
 import { IconFit } from './Icons';
 
 type FlowNodeData = FlowNode & { selected: boolean; onExpand: (id: string) => void; isRoot: boolean } & Record<string, unknown>;
 
-const NODE_H = 54;
 const MIN_READABLE_ZOOM = 0.8;
 
 /** Short location for the box; the full path is in the tooltip and the inspector. */
@@ -33,17 +32,13 @@ function subFor(n: FlowNode): string | undefined {
   return kind ? `${kind} · ${base}` : base;
 }
 
-function nodeWidth(n: FlowNode): number {
-  const w = Math.max(textWidth(n.label), textWidth(subFor(n) ?? '', '10.5px monospace') * 0.95, 80);
-  return Math.round(Math.min(300, Math.max(150, w + 34)));
-}
-
 const FlowBox = memo(function FlowBox({ data }: NodeProps<Node<FlowNodeData>>) {
   const sink = data.kind === 'table' || data.kind === 'external' || data.kind === 'channel';
-  const kindLabel = data.kind === 'entry' ? ROLES[data.role].label : sink ? ROLES[data.role].label : ROLES[data.role].short;
+  const kindLabel = data.kind === 'entry' || sink ? ROLES[data.role].label : ROLES[data.role].short;
+  const sub = subFor(data);
   return (
     <div
-      className={`fnode ${data.selected ? 'selected' : ''} ${data.kind === 'entry' ? 'entry' : ''} ${sink ? 'sink ' + data.kind : ''}`}
+      className={`fnode node-surface ${data.selected ? 'selected' : ''} ${data.kind === 'entry' ? 'entry' : ''} ${sink ? 'sink ' + data.kind : ''}`}
       style={{ '--rc': roleColor(data.role) } as CSSProperties}
       title={`${data.label}\n${data.sublabel ?? ''}\n\n${ROLES[data.role].label}: ${ROLES[data.role].explain}${data.repeated ? '\n\n(also called elsewhere in this flow)' : ''}`}
     >
@@ -55,7 +50,7 @@ const FlowBox = memo(function FlowBox({ data }: NodeProps<Node<FlowNodeData>>) {
           {data.repeated ? ' · again' : ''}
         </span>
         <span className="title">{data.label}</span>
-        {subFor(data) && <span className="sub">{subFor(data)}</span>}
+        {sub && <span className="sub">{sub}</span>}
       </div>
       {data.hiddenChildren > 0 && (
         <button
@@ -78,9 +73,9 @@ const nodeTypes = { box: FlowBox };
 
 function edgeStyle(kind: string, confidence: string): { stroke: string; dash?: string; width: number; opacity: number } {
   const stroke =
-    kind === 'reads' || kind === 'writes' ? 'var(--role-table)' : kind === 'http' ? 'var(--role-external)' : kind === 'publishes' || kind === 'subscribes' || kind === 'uses' ? 'var(--role-channel)' : 'var(--border-strong)';
-  if (confidence === 'guess') return { stroke, dash: '2 4', width: 1.3, opacity: 0.6 };
-  if (confidence === 'likely') return { stroke, dash: '6 4', width: 1.5, opacity: 0.9 };
+    kind === 'reads' || kind === 'writes' ? 'var(--role-table)' : kind === 'http' ? 'var(--role-external)' : kind === 'publishes' || kind === 'subscribes' || kind === 'uses' ? 'var(--role-channel)' : 'var(--edge)';
+  if (confidence === 'guess') return { stroke, dash: '2 4', width: 1.3, opacity: 0.7 };
+  if (confidence === 'likely') return { stroke, dash: '6 4', width: 1.5, opacity: 0.95 };
   return { stroke, width: 1.6, opacity: 1 };
 }
 
@@ -92,44 +87,16 @@ function Canvas({ rootId }: { rootId: string }) {
   const selected = useStore((s) => s.selected);
   const select = useStore((s) => s.select);
   const dive = useStore((s) => s.dive);
+  const revision = useStore((s) => s.revision);
   const [graph, setGraph] = useState<FlowGraph | null>(null);
-  const [positions, setPositions] = useState<Map<string, { x: number; y: number }>>(new Map());
+  const [graphKey, setGraphKey] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const rf = useReactFlow();
-  const lastRoot = useRef<string>('');
   const wrapRef = useRef<HTMLDivElement>(null);
-
-  /** Fit small flows to the screen; for big ones keep text readable and start at the root on the left. */
-  const smartFit = useCallback(
-    (g: FlowGraph, pos: Map<string, { x: number; y: number }>, animate: boolean) => {
-      const el = wrapRef.current;
-      if (!el || !g.nodes.length) return;
-      const W = el.clientWidth;
-      const H = el.clientHeight;
-      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      for (const n of g.nodes) {
-        const p = pos.get(n.id) ?? { x: 0, y: 0 };
-        minX = Math.min(minX, p.x);
-        minY = Math.min(minY, p.y);
-        maxX = Math.max(maxX, p.x + nodeWidth(n));
-        maxY = Math.max(maxY, p.y + NODE_H);
-      }
-      const pad = 48;
-      const fit = Math.min(1.05, (W - pad * 2) / Math.max(1, maxX - minX), (H - pad * 2 - 40) / Math.max(1, maxY - minY));
-      const duration = animate ? 250 : 0;
-      if (fit >= MIN_READABLE_ZOOM) {
-        rf.setViewport({ x: (W - (maxX - minX) * fit) / 2 - minX * fit, y: (H - (maxY - minY) * fit) / 2 - minY * fit, zoom: fit }, { duration });
-        return;
-      }
-      const z = MIN_READABLE_ZOOM;
-      const root = pos.get(g.rootId) ?? { x: minX, y: minY };
-      const graphH = (maxY - minY) * z;
-      const y = graphH + pad * 2 < H ? (H - graphH) / 2 - minY * z : H / 2 - (root.y + NODE_H / 2) * z;
-      rf.setViewport({ x: pad - minX * z, y, zoom: z }, { duration });
-    },
-    [rf],
-  );
+  const lastPos = useRef(new Map<string, { x: number; y: number }>());
+  const fittedKey = useRef<string | null>(null);
+  const lastRoot = useRef<string>('');
 
   useEffect(() => {
     let cancelled = false;
@@ -137,19 +104,13 @@ function Canvas({ rootId }: { rootId: string }) {
     setError(null);
     api
       .flow(rootId, { depth: prefs.depth, expanded: expanded ?? [], hideGuesses: prefs.hideGuesses, showTrivial: prefs.showTrivial })
-      .then(async (g) => {
-        const pos = await layoutGraph(
-          g.nodes.map((n) => ({ id: n.id, width: nodeWidth(n), height: NODE_H })),
-          g.edges.map((e) => ({ id: e.id, from: e.from, to: e.to })),
-          { layerGap: 56, nodeGap: 14 },
-        );
+      .then((g) => {
         if (cancelled) return;
+        if (lastRoot.current !== rootId) lastPos.current = new Map();
         setGraph(g);
-        setPositions(pos);
+        // Keyed by structure, not revision: a refresh that changes nothing keeps the layout and viewport.
+        setGraphKey(`${rootId}|${g.nodes.map((n) => n.id).join(',').length}|${g.nodes.length}|${g.edges.length}|${prefs.depth}|${(expanded ?? []).join(',')}|${prefs.hideGuesses}|${prefs.showTrivial}`);
         setLoading(false);
-        const rootChanged = lastRoot.current !== rootId;
-        lastRoot.current = rootId;
-        requestAnimationFrame(() => smartFit(g, pos, !rootChanged));
       })
       .catch((e) => {
         if (!cancelled) {
@@ -160,21 +121,63 @@ function Canvas({ rootId }: { rootId: string }) {
     return () => {
       cancelled = true;
     };
-  }, [rootId, prefs.depth, prefs.hideGuesses, prefs.showTrivial, expanded, smartFit]);
+  }, [rootId, prefs.depth, prefs.hideGuesses, prefs.showTrivial, expanded, revision]);
+
+  const nodeIds = useMemo(() => graph?.nodes.map((n) => n.id) ?? [], [graph]);
+  const layoutEdges = useMemo(() => graph?.edges.map((e) => ({ id: e.id, from: e.from, to: e.to })) ?? [], [graph]);
+  const layout = useMeasuredLayout(graphKey, nodeIds, layoutEdges, { layerGap: 56, nodeGap: 16 });
+  if (layout) lastPos.current = layout.pos;
+
+  /** Fit small flows to the screen; for big ones keep text readable and start at the root on the left. */
+  const smartFit = useCallback(
+    (l: MeasuredLayout, root: string, animate: boolean) => {
+      const el = wrapRef.current;
+      if (!el || !l.pos.size) return;
+      const W = el.clientWidth;
+      const H = el.clientHeight;
+      const { minX, minY, maxX, maxY } = boundsOf(l);
+      const pad = 48;
+      const fit = Math.min(1.05, (W - pad * 2) / Math.max(1, maxX - minX), (H - pad * 2 - 40) / Math.max(1, maxY - minY));
+      const duration = animate ? 250 : 0;
+      if (fit >= MIN_READABLE_ZOOM) {
+        rf.setViewport({ x: (W - (maxX - minX) * fit) / 2 - minX * fit, y: (H - (maxY - minY) * fit) / 2 - minY * fit, zoom: fit }, { duration });
+        return;
+      }
+      const z = MIN_READABLE_ZOOM;
+      const rp = l.pos.get(root) ?? { x: minX, y: minY };
+      const rh = l.sizes.get(root)?.h ?? 54;
+      const graphH = (maxY - minY) * z;
+      const y = graphH + pad * 2 < H ? (H - graphH) / 2 - minY * z : H / 2 - (rp.y + rh / 2) * z;
+      rf.setViewport({ x: pad - minX * z, y, zoom: z }, { duration });
+    },
+    [rf],
+  );
+
+  useEffect(() => {
+    if (!layout || !graph || fittedKey.current === layout.key) return;
+    fittedKey.current = layout.key;
+    const rootChanged = lastRoot.current !== rootId;
+    lastRoot.current = rootId;
+    requestAnimationFrame(() => smartFit(layout, graph.rootId, !rootChanged));
+  }, [layout, graph, rootId, smartFit]);
 
   const onExpand = useCallback((id: string) => toggleExpanded(id), [toggleExpanded]);
 
   const nodes: Node<FlowNodeData>[] = useMemo(() => {
     if (!graph) return [];
-    return graph.nodes.map((n) => ({
-      id: n.id,
-      type: 'box',
-      position: positions.get(n.id) ?? { x: 0, y: 0 },
-      data: { ...n, selected: n.id === selected, onExpand, isRoot: n.id === graph.rootId },
-      style: { width: nodeWidth(n), height: NODE_H },
-      draggable: true,
-    }));
-  }, [graph, positions, selected, onExpand]);
+    return graph.nodes.map((n) => {
+      // Until measured and laid out, keep known nodes where they were and hide new ones.
+      const p = layout?.pos.get(n.id) ?? lastPos.current.get(n.id);
+      return {
+        id: n.id,
+        type: 'box',
+        position: p ?? { x: 0, y: 0 },
+        data: { ...n, selected: n.id === selected, onExpand, isRoot: n.id === graph.rootId },
+        style: layout || p ? undefined : { visibility: 'hidden' },
+        draggable: true,
+      };
+    });
+  }, [graph, layout, selected, onExpand]);
 
   const edges: Edge[] = useMemo(() => {
     if (!graph) return [];
@@ -187,24 +190,22 @@ function Canvas({ rootId }: { rootId: string }) {
         target: e.to,
         type: 'smoothstep',
         label: e.label,
-        animated: false,
+        hidden: !layout,
         markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: highlighted ? 'var(--accent)' : st.stroke },
         style: { stroke: highlighted ? 'var(--accent)' : st.stroke, strokeWidth: highlighted ? 2.2 : st.width, strokeDasharray: st.dash, opacity: st.opacity },
         labelStyle: { fill: 'var(--text-dim)', fontSize: 10 },
         labelBgStyle: { fill: 'var(--bg)' },
         zIndex: highlighted ? 2 : 0,
-        data: { confidence: e.confidence },
       } satisfies Edge;
     });
-  }, [graph, selected]);
+  }, [graph, selected, layout]);
 
   const nodeById = useMemo(() => new Map(graph?.nodes.map((n) => [n.id, n]) ?? []), [graph]);
 
   const openNode = (id: string) => {
     const n = nodeById.get(id);
-    if (!n) return;
-    if (n.kind === 'symbol' && n.file) dive({ id: n.id, label: n.label, role: n.role, file: n.file, line: n.line });
-    else if (n.kind === 'entry' && n.file) dive({ id: n.id, label: n.label, role: n.role, file: n.file, line: n.line });
+    if (!n?.file) return;
+    if (n.kind === 'symbol' || n.kind === 'entry') dive({ id: n.id, label: n.label, role: n.role, file: n.file, line: n.line });
   };
 
   return (
@@ -221,11 +222,10 @@ function Canvas({ rootId }: { rootId: string }) {
         proOptions={{ hideAttribution: true }}
         nodesConnectable={false}
         elementsSelectable={false}
-        onlyRenderVisibleElements
       >
         <Background gap={22} size={1.2} color="var(--canvas-dot)" />
         <Controls showInteractive={false} position="bottom-right" />
-        {graph && graph.nodes.length > 25 && <MiniMap pannable zoomable nodeColor={(n) => roleColor((n.data as FlowNodeData).role)} maskColor="rgba(0,0,0,0.25)" position="top-left" style={{ width: 150, height: 100 }} />}
+        {graph && graph.nodes.length > 25 && <MiniMap pannable zoomable nodeColor={(n) => roleColor((n.data as FlowNodeData).role)} maskColor="var(--minimap-mask)" position="top-left" style={{ width: 150, height: 100 }} />}
       </ReactFlow>
       <div className="flow-toolbar">
         <label className="toggle" title="How many calls deep to show before you expand nodes by hand">
@@ -249,7 +249,7 @@ function Canvas({ rootId }: { rootId: string }) {
         <button className="icon-btn" title="Fit everything on screen" aria-label="Fit to screen" onClick={() => rf.fitView({ padding: 0.12, duration: 250 })}>
           <IconFit />
         </button>
-        {loading && <span className="spinner" aria-label="Loading" />}
+        {(loading || (graph && !layout)) && <span className="spinner" aria-label="Loading" />}
       </div>
       <div className="flow-legend">
         <span>

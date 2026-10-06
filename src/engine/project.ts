@@ -3,12 +3,13 @@ import path from 'node:path';
 import { scanProject } from './scan';
 import { extractFile } from './extract';
 import { CodeGraph } from './graph';
-import { assignRoles } from './roles';
+import { applyRoleOverrides, assignRoles } from './roles';
 import { extractOrmTables, mergeTables, parsePrisma, parseSql } from './db';
 import { buildSinks, type SinkIndex } from './sinks';
 import { extractEntries } from './routes';
 import { detectProfile } from './detect';
 import { buildDiagrams } from './diagrams';
+import { DEFAULT_SETTINGS } from './types';
 import type {
   CallRef,
   CodeLink,
@@ -25,6 +26,7 @@ import type {
   FlowNode,
   Progress,
   ProjectSummary,
+  ProjectSettings,
   Role,
   SearchHit,
   SymbolDetail,
@@ -32,6 +34,25 @@ import type {
 } from './types';
 
 const LARGE_PROJECT_FILES = 4000;
+
+export interface OpenOptions {
+  settings?: Partial<ProjectSettings>;
+  /** Parse results from a previous run, keyed by file path; updated in place. */
+  cache?: Map<string, { mtime: number; size: number; lines: number; facts?: FileFacts }>;
+  repoSettingsFile?: string;
+}
+
+const KIND_LABELS: Record<string, string> = {
+  'web-backend': 'Web backend / API',
+  'web-frontend': 'Web frontend',
+  'fullstack-web': 'Full-stack web app',
+  'low-latency': 'Low-latency / systems (IPC, trading-style)',
+  game: 'Game',
+  cli: 'Command-line tool',
+  library: 'Library',
+  desktop: 'Desktop app',
+  generic: 'General program',
+};
 
 export interface FlowOptions {
   depth?: number;
@@ -88,34 +109,40 @@ export class Project {
   entries: EntryPoint[] = [];
   entryById = new Map<string, EntryPoint>();
   summary!: ProjectSummary;
+  settings: ProjectSettings = DEFAULT_SETTINGS;
   private reach = new Map<string, Set<string>>();
+  /** Inline callbacks created inside each scope (`onMounted(() => …)`, `.then(x => …)`), keyed by scope id. */
+  private callbacks = new Map<string, { id: string; line: number; callee: string }[]>();
   private diagrams?: Diagrams;
 
-  static async open(root: string, onProgress?: (p: Progress) => void): Promise<Project> {
+  static async open(root: string, onProgress?: (p: Progress) => void, opts: OpenOptions = {}): Promise<Project> {
     const p = new Project();
-    await p.load(root, onProgress);
+    await p.load(root, onProgress, opts);
     return p;
   }
 
-  private async load(root: string, onProgress?: (p: Progress) => void) {
+  private async load(root: string, onProgress?: (p: Progress) => void, opts: OpenOptions = {}) {
     const started = Date.now();
     this.root = path.resolve(root);
     this.name = path.basename(this.root);
+    const settings: ProjectSettings = { ...DEFAULT_SETTINGS, ...(opts.settings ?? {}) };
+    this.settings = settings;
+    const cache = opts.cache;
     const warnings: string[] = [];
     const report = (phase: Progress['phase'], done: number, total: number, message: string) => onProgress?.({ phase, done, total, message });
 
     report('scan', 0, 0, 'Finding source files…');
-    const scan = await scanProject(this.root, (n) => report('scan', n, 0, `Found ${n} source files…`));
+    const scan = await scanProject(this.root, (n) => report('scan', n, 0, `Found ${n} source files…`), settings.exclude);
     this.files = scan.files;
     if (scan.truncated) warnings.push(`Only the first ${scan.files.length} source files were analyzed.`);
     // Very large repositories: tests can be most of the code but rarely explain the architecture.
     const TEST_FILE = /(^|\/)(__tests__|__mocks__|tests?|spec|specs|testing|e2e|fixtures?)\/|\.(test|spec)\.[jt]sx?$|_test\.(go|py)$|(^|\/)test_[^/]+\.py$|Tests?\.(java|cs|kt)$/;
-    let skipTests = false;
-    if (this.files.length > LARGE_PROJECT_FILES) {
+    let skipTests = settings.tests === 'exclude';
+    if (settings.tests === 'auto' && this.files.length > LARGE_PROJECT_FILES) {
       const tests = this.files.filter((f) => TEST_FILE.test(f.path)).length;
       if (tests > 0) {
         skipTests = true;
-        warnings.push(`This is a large project, so ${tests.toLocaleString()} test files were skipped to keep things fast.`);
+        warnings.push(`This is a large project, so ${tests.toLocaleString()} test files were skipped to keep things fast. You can include them in Project settings.`);
       }
     }
     if (scan.skippedLarge) warnings.push(`${scan.skippedLarge} very large files were skipped.`);
@@ -127,11 +154,22 @@ export class Project {
     for (let i = 0; i < total; i++) {
       const fe = this.files[i];
       try {
+        if (skipTests && TEST_FILE.test(fe.path)) continue;
+        // Re-indexing reuses the facts of files that have not changed since the last run.
+        const hit = cache?.get(fe.path);
+        if (hit && hit.mtime === fe.mtime && hit.size === fe.size) {
+          fe.lines = hit.lines;
+          if (hit.facts) allFacts.push(hit.facts);
+          continue;
+        }
         const src = await fs.readFile(path.join(this.root, fe.path), 'utf8');
         fe.lines = src.split('\n').length;
-        if (fe.lang && !(skipTests && TEST_FILE.test(fe.path)) && !(fe.size > 300_000 && /^.{2000,}$/m.test(src.slice(0, 20000)))) {
-          allFacts.push(await extractFile(fe.path, src, fe.lang));
+        let facts: FileFacts | undefined;
+        if (fe.lang && !(fe.size > 300_000 && /^.{2000,}$/m.test(src.slice(0, 20000)))) {
+          facts = await extractFile(fe.path, src, fe.lang);
+          allFacts.push(facts);
         }
+        cache?.set(fe.path, { mtime: fe.mtime ?? 0, size: fe.size, lines: fe.lines, facts });
       } catch (e) {
         warnings.push(`Could not parse ${fe.path}: ${(e as Error).message}`);
       }
@@ -185,8 +223,19 @@ export class Project {
 
     this.graph = new CodeGraph(this.root, allFacts, { tsconfigs, goMods });
     this.graph.resolveAll();
+    for (const f of allFacts) {
+      for (const c of f.calls) {
+        for (const a of c.args) {
+          if (a.kind !== 'func' || !a.symbolId || !this.graph.symbols.has(a.symbolId)) continue;
+          const list = this.callbacks.get(c.from) ?? [];
+          list.push({ id: a.symbolId, line: c.range.sl, callee: c.callee });
+          this.callbacks.set(c.from, list);
+        }
+      }
+    }
     report('analyze', 0, 1, 'Classifying code and finding entry points…');
     assignRoles(this.graph.symbols);
+    applyRoleOverrides(this.graph.symbols, settings.roleOverrides);
 
     const ormTables = extractOrmTables(this.graph);
     this.tables = mergeTables([sqlTables, prismaTables, ormTables], extraIndexes, fks);
@@ -196,11 +245,23 @@ export class Project {
     const projectHasServerLib =
       /\b(express|koa|fastify|hono|restify|polka|@nestjs\/core|elysia)\b/.test(allDeps) || goMods.some((g) => /gin-gonic|labstack\/echo|go-chi|gorilla\/mux|gofiber/.test(g.text));
     const hasNext = /(^|\s)next(\s|$)/.test(allDeps);
-    this.entries = extractEntries(this.graph, this.sinks, { pkgJsons, projectHasServerLib, hasNext });
-    // Route handlers are controllers even when nothing else says so.
+    const hasClientRouter = /(^|\s)(vue-router|@angular\/router|react-router|react-router-dom|@tanstack\/(react|vue|solid)-router|@solidjs\/router)(\s|$)/.test(allDeps);
+    this.entries = extractEntries(this.graph, this.sinks, { pkgJsons, projectHasServerLib, hasNext, hasClientRouter });
+    this.entries.push(...this.customEntries(settings.entryPoints, warnings));
+    // Code that calls an outside HTTP API and does not handle a route is a client (e.g. a frontend's src/api/*.ts).
+    const handlerIds = new Set(this.entries.map((e) => e.handlerId));
+    for (const [from, list] of this.sinks.edges) {
+      const s = this.graph.symbols.get(from);
+      if (!s || handlerIds.has(from) || s.roleReason?.startsWith('set by you') || !list.some((e) => e.kind === 'http')) continue;
+      if (s.role === 'controller' || s.role === 'other' || s.role === 'util') {
+        s.role = 'client';
+        s.roleReason = 'calls an HTTP API';
+      }
+    }
+    // Route handlers are controllers even when nothing else says so (unless the user said otherwise).
     for (const e of this.entries) {
       const s = e.handlerId ? this.graph.symbols.get(e.handlerId) : undefined;
-      if (s && (!s.role || s.role === 'other' || s.role === 'util')) {
+      if (s && (!s.role || s.role === 'other' || s.role === 'util') && !s.roleReason?.startsWith('set by you')) {
         s.role = e.kind === 'page' ? 'view' : e.kind === 'process' ? 'entry' : 'controller';
         s.roleReason = `handles ${e.label}`;
       }
@@ -210,7 +271,12 @@ export class Project {
     this.computeReach();
 
     const profile = detectProfile(this.graph, this.files, manifests, scan.extras, this.entries);
-    this.releaseAnalysisData();
+    if (settings.projectKind) {
+      // The user knows best: put their choice first, keep the detected kinds as alternatives.
+      const chosen = profile.kinds.find((k) => k.kind === settings.projectKind);
+      const rest = profile.kinds.filter((k) => k.kind !== settings.projectKind);
+      profile.kinds = [{ kind: settings.projectKind, label: chosen?.label ?? KIND_LABELS[settings.projectKind], score: chosen?.score ?? 0, evidence: [{ text: 'Set by you in Project settings' }, ...(chosen?.evidence ?? [])] }, ...rest];
+    }
     const lines = this.files.reduce((a, f) => a + f.lines, 0);
     this.summary = {
       root: this.root,
@@ -230,22 +296,33 @@ export class Project {
       entries: this.entries,
       files: this.files,
       warnings,
+      settings,
+      repoSettingsFile: opts.repoSettingsFile,
     };
     report('done', 1, 1, 'Ready');
   }
 
-  /**
-   * Call arguments, string literals and local variable facts are only needed while analyzing.
-   * Dropping them roughly halves memory on large repositories.
-   */
-  private releaseAnalysisData() {
-    for (const f of this.graph.facts.values()) {
-      for (const c of f.calls) c.args = [];
-      f.strings = [];
-      f.vars = [];
-      f.jsxRoutes = [];
+  /** Entry points the user pinned in settings: `Class.method`, `function` or `path/file.ext#name`. */
+  private customEntries(specs: ProjectSettings['entryPoints'], warnings: string[]): EntryPoint[] {
+    const out: EntryPoint[] = [];
+    for (const spec of specs) {
+      const [filePart, namePart] = spec.symbol.includes('#') ? spec.symbol.split('#') : [undefined, spec.symbol];
+      const dot = namePart.lastIndexOf('.');
+      const container = dot > 0 ? namePart.slice(0, dot) : undefined;
+      const name = dot > 0 ? namePart.slice(dot + 1) : namePart;
+      const hits = [...this.graph.symbols.values()].filter(
+        (s) => s.name === name && (container ? s.container === container : true) && (!filePart || s.file === filePart || s.file.endsWith('/' + filePart)) && s.kind !== 'handler',
+      );
+      if (!hits.length) {
+        warnings.push(`Pinned entry point "${spec.symbol}" was not found.`);
+        continue;
+      }
+      for (const s of hits.slice(0, 5)) {
+        const label = spec.label ?? (s.container ? `${s.container}.${s.name}` : s.name);
+        out.push({ id: `custom:${s.id}`, kind: 'custom', label, group: 'Pinned by you', framework: 'pinned', handlerId: s.id, handlerName: s.container ? `${s.container}.${s.name}` : s.name, file: s.file, line: s.range.sl });
+      }
     }
-    this.graph.varsByScope.clear();
+    return out;
   }
 
   // ---------------- helpers ----------------
@@ -295,16 +372,27 @@ export class Project {
           out.push({ to: t, line: rc.site.range.sl, confidence: rc.confidence, reason: rc.reason, kind: 'calls' });
         }
       }
-    } else if (sym.role === 'controller') {
-      // Class-based views/controllers (Django View, DRF ViewSet, Flask MethodView): the framework calls these methods.
+    } else if (sym.role === 'controller' || sym.role === 'view') {
+      // Class-based views/controllers (Django View, DRF ViewSet, Flask MethodView) and UI component classes
+      // (Angular, React): the framework calls these methods for you.
+      const FRAMEWORK_METHODS =
+        sym.role === 'controller'
+          ? /^(get|post|put|patch|delete|head|options|dispatch|list|create|retrieve|update|partial_update|destroy|perform_create|get_queryset)$/
+          : /^(constructor|ngOnInit|ngOnChanges|ngAfterViewInit|ngOnDestroy|componentDidMount|componentDidUpdate|componentWillUnmount|render|setup|mounted|created|beforeMount|onMounted)$/;
       for (const m of this.graph.membersByContainer.get(sym.name)?.values() ?? []) {
         for (const mm of m) {
-          if (mm.containerId !== sym.id || !/^(get|post|put|patch|delete|head|options|dispatch|list|create|retrieve|update|partial_update|destroy|perform_create|get_queryset)$/.test(mm.name)) continue;
+          if (mm.containerId !== sym.id || !FRAMEWORK_METHODS.test(mm.name)) continue;
           if (seen.has(mm.id)) continue;
           seen.add(mm.id);
           out.push({ to: mm.id, line: mm.range.sl, confidence: 'certain', reason: 'called by the framework for matching requests', kind: 'calls' });
         }
       }
+    }
+    // Callbacks handed to other code (event handlers, promise chains, lifecycle hooks) run as part of this flow.
+    for (const cb of this.callbacks.get(id) ?? []) {
+      if (seen.has(cb.id)) continue;
+      seen.add(cb.id);
+      out.push({ to: cb.id, line: cb.line, confidence: 'likely', reason: `callback passed to ${cb.callee}()`, kind: 'calls' });
     }
     for (const se of this.sinks.edges.get(id) ?? []) {
       if (seen.has(se.to)) continue;
@@ -356,7 +444,7 @@ export class Project {
         n = {
           id,
           kind: 'symbol',
-          label: s.kind === 'handler' ? 'inline handler' : s.kind === 'constructor' ? `new ${s.container ?? s.name}` : s.container ? `${s.container}.${s.name}` : this.displayName(s),
+          label: s.kind === 'handler' ? (/^\w+\(/.test(s.name) ? `${s.name.split('(')[0]}(…) callback` : 'inline handler') : s.kind === 'constructor' ? `new ${s.container ?? s.name}` : s.container ? `${s.container}.${s.name}` : this.displayName(s),
           sublabel: `${s.file}:${s.range.sl}`,
           role: s.role ?? 'other',
           file: s.file,
@@ -622,7 +710,7 @@ export class Project {
 }
 
 function kindOrder(k: EntryPoint['kind']): number {
-  return { 'http-route': 0, page: 1, process: 2, job: 3, channel: 4 }[k] ?? 5;
+  return { custom: -1, 'http-route': 0, page: 1, process: 2, job: 3, channel: 4 }[k] ?? 5;
 }
 
 export type { Role };

@@ -149,7 +149,7 @@ export class CodeGraph {
   // ---------- module resolution ----------
 
   private tryJsFile(base: string): string | undefined {
-    const exts = ['', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '/index.ts', '/index.tsx', '/index.js', '/index.jsx', '/index.mjs'];
+    const exts = ['', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.vue', '.svelte', '/index.ts', '/index.tsx', '/index.js', '/index.jsx', '/index.mjs'];
     const clean = base.replace(/\.(js|jsx|mjs|cjs)$/, '');
     for (const cand of [base, clean]) for (const e of exts) if (this.fileSet.has(cand + e)) return cand + e;
     return undefined;

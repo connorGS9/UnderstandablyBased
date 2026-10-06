@@ -27,6 +27,7 @@ import 'monaco-editor/languages/definitions/sql/register';
 import 'monaco-editor/languages/definitions/yaml/register';
 import 'monaco-editor/languages/definitions/xml/register';
 import 'monaco-editor/languages/definitions/markdown/register';
+import 'monaco-editor/languages/definitions/html/register';
 import EditorWorker from 'monaco-editor/editor/editor.worker?worker';
 
 (self as unknown as { MonacoEnvironment: monaco.Environment }).MonacoEnvironment = {
@@ -74,12 +75,19 @@ monaco.editor.defineTheme('ub-light', {
     { token: 'annotation', foreground: 'a16207' },
   ],
   colors: {
-    'editor.background': '#fbfbfc',
-    'editorLineNumber.foreground': '#c3c8d2',
-    'editorLineNumber.activeForeground': '#6b7280',
-    'editor.lineHighlightBackground': '#f1f3f7',
-    'editorGutter.background': '#fbfbfc',
-    'minimap.background': '#fbfbfc',
+    // Matches the soft-gray light theme rather than glaring white.
+    'editor.background': '#f3f4f6',
+    'editor.foreground': '#1f2430',
+    'editorLineNumber.foreground': '#a9b0bc',
+    'editorLineNumber.activeForeground': '#4d5567',
+    'editor.lineHighlightBackground': '#e9ebef',
+    'editor.selectionBackground': '#c9cff7',
+    'editorGutter.background': '#f3f4f6',
+    'minimap.background': '#eef0f3',
+    'editorWidget.background': '#f3f4f6',
+    'editorHoverWidget.background': '#f6f7f9',
+    'editorHoverWidget.border': '#c9ced7',
+    'editorStickyScroll.background': '#eceef2',
   },
 });
 
@@ -97,6 +105,7 @@ export const MONACO_LANG: Record<string, string> = {
 };
 
 export function languageForPath(path: string, lang: string | null): string {
+  if (/\.(vue|svelte)$/.test(path)) return 'html';
   if (lang) return MONACO_LANG[lang] ?? 'plaintext';
   if (path.endsWith('.sql')) return 'sql';
   if (/\.ya?ml$/.test(path)) return 'yaml';

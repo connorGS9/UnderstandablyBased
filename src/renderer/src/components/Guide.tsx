@@ -8,6 +8,7 @@ import { METHOD_COLORS } from '../lib/roles';
 type Tab = EntryKind | 'files';
 
 const TAB_LABEL: Record<Tab, string> = {
+  custom: 'Pinned',
   'http-route': 'Routes',
   page: 'Pages',
   process: 'Processes',
@@ -17,6 +18,7 @@ const TAB_LABEL: Record<Tab, string> = {
 };
 
 const TAB_HELP: Record<Tab, string> = {
+  custom: 'Entry points you pinned yourself (Inspector → Pin as entry point, or Project settings).',
   'http-route': 'URLs this app answers. Pick one to see every function the request passes through.',
   page: 'Screens in the user interface and the component that renders each one.',
   process: 'Programs that can be started: main() functions and startup scripts.',
@@ -38,8 +40,10 @@ export function Guide() {
     for (const e of summary.entries) c.set(e.kind, (c.get(e.kind) ?? 0) + 1);
     return c;
   }, [summary]);
-  const tabs = (['http-route', 'page', 'process', 'job', 'channel'] as Tab[]).filter((t) => counts.get(t)).concat('files');
-  const [tab, setTab] = useState<Tab>(() => tabs[0]);
+  const tabs = (['custom', 'http-route', 'page', 'process', 'job', 'channel'] as Tab[]).filter((t) => counts.get(t)).concat('files');
+  const [tabState, setTab] = useState<Tab>(() => tabs.find((t) => t !== 'custom') ?? tabs[0]);
+  // Re-indexing can remove a tab (e.g. the last pinned entry); fall back to the first available one.
+  const tab = tabs.includes(tabState) ? tabState : tabs[0];
   const [filter, setFilter] = useState('');
   const [methods, setMethods] = useState<Set<string>>(new Set());
   const [groupBy, setGroupBy] = useState<'source' | 'path'>('source');

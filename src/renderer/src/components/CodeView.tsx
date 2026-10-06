@@ -30,6 +30,7 @@ export function CodeView({ loc }: { loc: CodeLoc }) {
   const traceFrom = useStore((s) => s.traceFrom);
   const showFlow = useStore((s) => s.showFlow);
   const flowRoot = useStore((s) => s.flowRoot);
+  const revision = useStore((s) => s.revision);
 
   // Create the editor once.
   useEffect(() => {
@@ -119,6 +120,7 @@ export function CodeView({ loc }: { loc: CodeLoc }) {
         const uri = monaco.Uri.parse(`ub://project/${encodeURI(f.path)}`);
         let model = monaco.editor.getModel(uri);
         if (!model) model = monaco.editor.createModel(f.content, languageForPath(f.path, f.lang), uri);
+        else if (model.getValue() !== f.content) model.setValue(f.content); // file changed on disk
         if (ed.getModel() !== model) {
           const old = ed.getModel();
           ed.setModel(model);
@@ -148,7 +150,7 @@ export function CodeView({ loc }: { loc: CodeLoc }) {
     return () => {
       cancelled = true;
     };
-  }, [loc.file, loc.line, loc.endLine, loc.symbolId]);
+  }, [loc.file, loc.line, loc.endLine, loc.symbolId, revision]);
 
   const focus = file && loc.symbolId ? file.symbols.find((s) => s.id === loc.symbolId) : undefined;
 

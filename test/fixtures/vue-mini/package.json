@@ -1,0 +1,1 @@
+{ "name": "vue-mini", "dependencies": { "vue": "^3.4.0", "vue-router": "^4.3.0", "axios": "^1.7.0" } }

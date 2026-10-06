@@ -19,6 +19,31 @@ Everything runs locally and offline. Nothing is sent anywhere.
   - **Route map**: every URL as a tree of path segments.
   - **Modules**: which folders depend on which.
 - **Search** (Ctrl/⌘+K): routes, functions, classes, files and tables.
+- **Stays current**: when you edit files the analysis refreshes on its own; only changed files are re-read. The ⟳ button re-analyzes on demand.
+- **Adjustable**: the panels resize (drag their borders), and light and dark themes are both available.
+
+## When the analysis is not quite right
+
+Every project is a little different, so you can correct the map (⚙ **Project settings** in the top bar):
+
+- **Ignore folders and files** using gitignore-style patterns (`legacy/`, `**/generated/**`).
+- **Tests**: automatic (skipped only in very large projects), always included, or always skipped.
+- **Override the program type** if the detection guessed wrong.
+- **Role corrections**: "OrderStore is really data access". In the Inspector, click **Wrong role?** to fix it. A rule can match a class or function name, `Class.method`, or a path pattern.
+- **Pinned entry points**: start flows from code the analyzer didn't recognize as an entry point (CLI commands, message handlers, scripts). Use **Pin as entry point** in the Inspector.
+
+These settings are saved per project on your machine. To share them with your team, commit an `understandably.json` with the same fields to the project root; the settings dialog shows the JSON to copy. Everyone starts from the repo file, and their own changes take priority.
+
+```json
+{
+  "exclude": ["legacy/", "scripts/"],
+  "tests": "auto",
+  "roleOverrides": [{ "match": "src/adapters/**", "role": "client" }],
+  "entryPoints": [{ "symbol": "Worker.processQueue" }],
+  "projectKind": "web-backend",
+  "autoRefresh": true
+}
+```
 
 Every inferred link has a confidence level: **certain** (explicit in the code), **likely** (via an interface, inheritance, or a framework convention) or **guess** (matched by name only). Guesses are drawn dotted and can be hidden.
 
@@ -51,7 +76,7 @@ If `npm install` didn't download Electron (npm 11 blocks install scripts by defa
 | --- | --- |
 | Languages | TypeScript/JavaScript (incl. JSX/TSX), Java, Python, Go, C, C++, Rust, C# |
 | HTTP routes | Spring MVC, JAX-RS, NestJS (and `@RestController`/`@JsonController` styles), ASP.NET Core (attributes and minimal APIs), Express/Koa/Fastify/Hono (including nested routers, `app.use` prefixes and middleware), FastAPI/Flask (routers, blueprints, prefixes from settings), Django `urls.py` (`include()`, class-based views), Gin/Echo/Chi/Fiber/net/http (groups), Axum |
-| Pages | Next.js app and pages routers, React Router `<Route>` |
+| Pages | Next.js app and pages routers, React Router (`<Route>` and route objects), Vue Router, Angular Router (including nested `loadComponent`), TanStack Router (`createFileRoute`). Vue and Svelte single-file components are analyzed through their `<script>` blocks. |
 | Processes & jobs | `main()` in every language, Python `__main__`, Node entry scripts, `@Scheduled`, Celery tasks, Kafka/Rabbit/JMS listeners |
 | Databases | SQL DDL (`CREATE TABLE`/`INDEX`, `ALTER TABLE`), Prisma, JPA/Hibernate, TypeORM, Django models, SQLAlchemy/SQLModel. Table usage is detected from SQL in strings, ORM model calls, Prisma clients and typed repositories |
 | External calls | `fetch`, axios, requests/httpx, RestTemplate/WebClient, HttpClient, Go `net/http`, libcurl |
@@ -83,6 +108,7 @@ Very large repositories (over 4,000 source files) skip test files to stay fast. 
 - A UI inspector for frontends: point at part of the running app and see the code that renders it.
 - Open a Git URL directly (clone into a cache).
 - Link frontend API calls to the backend routes they hit, so a flow can continue across the network.
-- Incremental re-indexing on file changes, and parallel parsing.
-- More frameworks: Rails, Laravel, Spring WebFlux functional routes, Vue/Angular routers, Kotlin.
+- Parallel parsing for very large repositories.
+- More languages and frameworks: Kotlin, Ruby/Rails, PHP/Laravel, Spring WebFlux functional routes.
+- Monorepo scoping: focus the map on one package or service at a time.
 - An optional precise mode using language servers / SCIP indexes for compiler-accurate links.

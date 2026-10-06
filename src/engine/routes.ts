@@ -691,18 +691,52 @@ function nextRoutes(graph: CodeGraph, out: EntryCollector, hasNext: boolean) {
   }
 }
 
-// ---------------- React Router <Route> ----------------
+// ---------------- client-side routers: React Router, Vue Router, Angular, TanStack ----------------
 
-function reactRouterRoutes(graph: CodeGraph, out: EntryCollector) {
+const ROUTER_LIBS: [RegExp, string][] = [
+  [/^vue-router$/, 'Vue Router'],
+  [/^@angular\/router$/, 'Angular Router'],
+  [/^@tanstack\/(react|solid|vue)-router$/, 'TanStack Router'],
+  [/^react-router(-dom)?$/, 'React Router'],
+  [/^@solidjs\/router$/, 'Solid Router'],
+];
+
+function clientRoutes(graph: CodeGraph, out: EntryCollector, projectHasRouter: boolean) {
   for (const [file, f] of graph.facts) {
+    if (!f.jsxRoutes.length) continue;
+    const lib = ROUTER_LIBS.find(([re]) => f.imports.some((i) => re.test(i.source)))?.[1];
     for (const r of f.jsxRoutes) {
+      // Object literals with a `path` are common outside routing (menus, configs); require a router nearby.
+      if (r.style === 'object' && !lib && !projectHasRouter) continue;
       let handlerId: string | undefined;
-      if (r.component) {
+      let handlerName = r.component;
+      let handlerFile: string | undefined;
+      if (r.importSource) {
+        // Lazy route: () => import('./views/Users.vue') [.then(m => m.UsersComponent)]
+        const target = graph.resolveModule(file, r.importSource, f.lang)[0];
+        if (target) {
+          handlerFile = target;
+          const ex = graph.lookupExport(target, r.component ?? 'default');
+          handlerId = ex?.sym?.id ?? (graph.facts.has(target) ? `file:${target}` : undefined);
+          handlerName = handlerName ?? target.split('/').pop();
+        }
+      } else if (r.component) {
         const site: CallSite = { from: r.scope, callee: r.component, args: [], range: { sl: r.line, sc: 1, el: r.line, ec: 1 } };
-        handlerId = graph.resolveCall(site, file, f.lang)?.targets[0]?.id;
+        const t = graph.resolveCall(site, file, f.lang)?.targets[0];
+        handlerId = t?.kind === 'constructor' ? t.containerId ?? t.id : t?.id;
+        // Components imported from single-file components (.vue/.svelte) have no named symbol: use the file.
+        if (!handlerId) {
+          const imp = graph.importsByFile.get(file)?.get(r.component);
+          const target = imp?.resolved?.[0];
+          if (target) {
+            handlerFile = target;
+            handlerId = graph.facts.has(target) ? `file:${target}` : undefined;
+          }
+        }
       }
       const p = r.path.startsWith('/') ? r.path : '/' + r.path;
-      out.add({ kind: 'page', label: p, path: p, group: 'Pages', framework: 'React Router', handlerId, handlerName: r.component, file, line: r.line });
+      const framework = r.style === 'tanstack' ? 'TanStack Router' : lib ?? (r.style === 'jsx' ? 'React Router' : 'client router');
+      out.add({ kind: 'page', label: p, path: p, group: 'Pages', framework, handlerId, handlerName, file: handlerFile && !handlerId ? handlerFile : file, line: r.line });
     }
   }
 }
@@ -780,14 +814,14 @@ function channelEntries(sinks: SinkIndex, out: EntryCollector) {
   }
 }
 
-export function extractEntries(graph: CodeGraph, sinks: SinkIndex, ctx: { pkgJsons: { file: string; json: any }[]; projectHasServerLib: boolean; hasNext: boolean }): EntryPoint[] {
+export function extractEntries(graph: CodeGraph, sinks: SinkIndex, ctx: { pkgJsons: { file: string; json: any }[]; projectHasServerLib: boolean; hasNext: boolean; hasClientRouter: boolean }): EntryPoint[] {
   const out = new EntryCollector();
   annotationControllers(graph, out);
   pythonDecoratorRoutes(graph, out);
   djangoRoutes(graph, out);
   callRoutes(graph, out, ctx.projectHasServerLib);
   nextRoutes(graph, out, ctx.hasNext);
-  reactRouterRoutes(graph, out);
+  clientRoutes(graph, out, ctx.hasClientRouter);
   jobEntries(graph, out);
   processEntries(graph, out, ctx.pkgJsons);
   channelEntries(sinks, out);

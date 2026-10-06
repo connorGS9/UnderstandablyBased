@@ -25,7 +25,10 @@ const INTERESTING = new Set([
   'template_string',
   'jsx_self_closing_element',
   'jsx_opening_element',
+  'object',
 ]);
+
+const ROUTE_COMPONENT_KEYS = new Set(['component', 'element', 'loadComponent', 'Component', 'lazy', 'components', 'loadChildren']);
 
 const FUNC_TYPES = new Set(['arrow_function', 'function_expression', 'function']);
 
@@ -41,6 +44,31 @@ function typeOfAnnotation(n: Node | null): { name?: string; args: string[] } {
 
 export function extractJs(c: Collector, tree: Tree) {
   const src = c.src;
+
+  const keyOf = (pair: Node) => {
+    const k = field(pair, 'key');
+    return k ? unquote(k.text) ?? k.text : '';
+  };
+  const pairValue = (obj: Node, key: string) => children(obj).find((p) => p.type === 'pair' && keyOf(p) === key)?.childForFieldName('value') ?? null;
+
+  /** What a route renders: `UserList`, `<Home />`, or a lazy `() => import('./x')` (+ `.then(m => m.X)`). */
+  const routeComponent = (obj: Node): { component?: string; importSource?: string } => {
+    for (const key of ROUTE_COMPONENT_KEYS) {
+      const v = pairValue(obj, key);
+      if (!v) continue;
+      if (v.type === 'identifier' || v.type === 'member_expression') return { component: v.text.split('.').pop() };
+      if (v.type === 'jsx_self_closing_element' || v.type === 'jsx_element') {
+        const tag = v.type === 'jsx_element' ? field(field(v, 'open_tag'), 'name') : field(v, 'name');
+        return { component: tag?.text };
+      }
+      const imp = v.descendantsOfType('import')[0];
+      const call = imp?.parent;
+      const source = call ? unquote(children(field(call, 'arguments'))[0]?.text ?? '') : undefined;
+      const then = /\.then\(\s*\(?\s*(\w+)\s*\)?\s*=>\s*\1\.(\w+)/.exec(v.text);
+      if (source) return { importSource: source, component: then?.[2] };
+    }
+    return {};
+  };
 
   const toArg = (n: Node): Arg => {
     const line = n.startPosition.row + 1;
@@ -277,6 +305,18 @@ export function extractJs(c: Collector, tree: Tree) {
           const fn = field(n, 'function');
           const argsNode = field(n, 'arguments');
           if (!fn) return;
+          // TanStack Router: createFileRoute('/posts/$id')({ component: Post })
+          if (fn.type === 'call_expression' && /^create(Lazy)?FileRoute$/.test(field(fn, 'function')?.text ?? '')) {
+            const p = unquote(children(field(fn, 'arguments'))[0]?.text ?? '');
+            const opts = children(argsNode).find((a) => a.type === 'object');
+            if (p !== undefined) c.facts.jsxRoutes.push({ path: p.replace(/\$(\w+)/g, ':$1') || '/', ...(opts ? routeComponent(opts) : {}), style: 'tanstack', line: n.startPosition.row + 1, scope: c.scopeId });
+          }
+          // TanStack/Solid code-based routes: createRoute({ path: '/about', component: About })
+          if (fn.type === 'identifier' && fn.text === 'createRoute') {
+            const opts = children(argsNode).find((a) => a.type === 'object');
+            const p = opts ? pairValue(opts, 'path') : null;
+            if (opts && p) c.facts.jsxRoutes.push({ path: (unquote(p.text) ?? '').replace(/\$(\w+)/g, ':$1'), ...routeComponent(opts), style: 'tanstack', line: n.startPosition.row + 1, scope: c.scopeId });
+          }
           const args = argsNode?.type === 'arguments' ? children(argsNode).map(toArg) : [];
           if (fn.type === 'identifier') {
             if (fn.text === 'require') return;
@@ -491,6 +531,27 @@ export function extractJs(c: Collector, tree: Tree) {
           if (v) c.addString(v, n);
           return;
         }
+        case 'object': {
+          // Vue Router / Angular / React Router object routes: [{ path: '/users', component: UserList, children: [...] }]
+          if (n.parent?.type !== 'array') return;
+          const pathNode = pairValue(n, 'path');
+          if (!pathNode || (pathNode.type !== 'string' && pathNode.type !== 'template_string')) return;
+          const comp = routeComponent(n);
+          if (!comp.component && !comp.importSource) return;
+          const segs = [unquote(pathNode.text) ?? ''];
+          let cur: Node = n;
+          // Nested routes: object -> array -> pair(children) -> parent route object
+          while (cur.parent?.type === 'array' && cur.parent.parent?.type === 'pair' && keyOf(cur.parent.parent) === 'children' && cur.parent.parent.parent?.type === 'object') {
+            const parent: Node = cur.parent.parent.parent;
+            const pp = pairValue(parent, 'path');
+            if (pp) segs.unshift(unquote(pp.text) ?? '');
+            cur = parent;
+          }
+          let full = '';
+          for (const s of segs) full = s.startsWith('/') ? s : `${full.replace(/\/$/, '')}/${s}`;
+          c.facts.jsxRoutes.push({ path: full || '/', ...comp, style: 'object', line: n.startPosition.row + 1, scope: c.scopeId });
+          return;
+        }
         case 'jsx_self_closing_element':
         case 'jsx_opening_element': {
           const name = field(n, 'name')?.text;
@@ -511,7 +572,7 @@ export function extractJs(c: Collector, tree: Tree) {
               } else if (inner) component = inner.text;
             }
           }
-          if (path !== undefined) c.facts.jsxRoutes.push({ path, component, line: n.startPosition.row + 1, scope: c.scopeId });
+          if (path !== undefined) c.facts.jsxRoutes.push({ path, component, style: 'jsx', line: n.startPosition.row + 1, scope: c.scopeId });
           return;
         }
       }

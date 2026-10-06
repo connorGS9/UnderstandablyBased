@@ -4,7 +4,9 @@ import { Overview } from './Overview';
 import { Explore } from './Explore';
 import { Diagrams } from './Diagrams';
 import { CommandPalette } from '../components/CommandPalette';
-import { IconBack, IconForward, IconMoon, IconSearch, IconSun, IconX } from '../components/Icons';
+import { SettingsDialog } from '../components/SettingsDialog';
+import { api } from '../api';
+import { IconBack, IconForward, IconGear, IconMoon, IconRefresh, IconSearch, IconSun, IconX } from '../components/Icons';
 import { useTheme } from '../lib/theme';
 
 const TABS: { key: View; label: string; hint: string }[] = [
@@ -19,6 +21,17 @@ export function Workspace() {
   const s = useStore();
   const [theme, setTheme] = useTheme();
   const summary = s.summary!;
+
+  // Auto-refresh: the engine re-indexes when files change and pushes the new analysis here.
+  useEffect(
+    () =>
+      api.onEvent((e) => {
+        if (e.type === 'updating') useStore.setState({ updating: true });
+        else if (e.type === 'updated') useStore.getState().applySummary(e.summary);
+        else useStore.setState({ updating: false, updateError: e.error });
+      }),
+    [],
+  );
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -78,10 +91,26 @@ export function Workspace() {
           ))}
         </nav>
         <div className="grow" />
+        {s.updating && (
+          <span className="updating-pill" role="status">
+            <span className="spinner" /> Updating…
+          </span>
+        )}
+        {s.updateError && !s.updating && (
+          <span className="updating-pill" style={{ color: 'var(--danger)' }} title={s.updateError}>
+            Update failed
+          </span>
+        )}
         <button className="search-trigger" onClick={() => s.setPalette(true)}>
           <IconSearch size={14} />
           <span className="grow" style={{ textAlign: 'left' }}>Search routes, code, tables…</span>
           <span className="kbd">{isMac ? '⌘K' : 'Ctrl K'}</span>
+        </button>
+        <button className="icon-btn" onClick={s.reindex} disabled={s.updating} title="Re-analyze the project (only changed files are re-read)" aria-label="Re-analyze">
+          <IconRefresh />
+        </button>
+        <button className="icon-btn" onClick={() => s.setSettingsOpen(true)} title="Project settings: ignored folders, tests, role corrections, pinned entry points" aria-label="Project settings">
+          <IconGear />
         </button>
         <button className="icon-btn" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} title="Toggle light/dark" aria-label="Toggle theme">
           {theme === 'dark' ? <IconSun /> : <IconMoon />}
@@ -96,6 +125,7 @@ export function Workspace() {
         {s.view === 'diagrams' && <Diagrams />}
       </main>
       {s.paletteOpen && <CommandPalette />}
+      {s.settingsOpen && <SettingsDialog />}
     </div>
   );
 }

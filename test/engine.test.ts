@@ -136,3 +136,56 @@ test('file view links calls to their targets', async () => {
   assert.ok(link, 'call to notifyWarehouse should be a clickable link');
   assert.equal(link!.range.sl, 9);
 });
+
+test('vue: router config, lazy .vue views, script setup callbacks', async () => {
+  const p = await open('vue-mini');
+  const pages = p.entries.filter((e) => e.kind === 'page').map((e) => `${e.path} -> ${e.handlerName}`).sort();
+  assert.deepEqual(pages, ['/ -> Home', '/users -> Users.vue', '/users/:id -> UserDetail.vue']);
+  const flow = reach(p.flow('page: /users', { depth: 5 }));
+  assert.ok(flow.includes('fetchUsers'), flow.join(' > '));
+  assert.ok(flow.some((l) => l.includes('/api/users')));
+  assert.equal([...p.graph.symbols.values()].find((s) => s.name === 'fetchUsers')?.role, 'client');
+});
+
+test('angular: route arrays, nested loadComponent, component lifecycle', async () => {
+  const p = await open('angular-mini');
+  const pages = p.entries.filter((e) => e.kind === 'page').map((e) => `${e.path} -> ${e.handlerName}`).sort();
+  assert.deepEqual(pages, ['/orders/:id -> OrderDetailComponent', '/users -> UsersComponent']);
+  const flow = reach(p.flow('page: /users', { depth: 5 }));
+  assert.ok(flow.includes('UserService.load'), flow.join(' > '));
+});
+
+test('tanstack router: createFileRoute', async () => {
+  const p = await open('tanstack-mini');
+  const e = p.entries.find((x) => x.kind === 'page')!;
+  assert.equal(e.path, '/posts/:postId');
+  assert.equal(e.handlerName, 'PostPage');
+});
+
+test('settings: excludes, role corrections, pinned entry points, project kind', async () => {
+  const p = await Project.open(fixture('express-mini'), undefined, {
+    settings: {
+      exclude: ['src/db.js'],
+      roleOverrides: [{ match: 'listOrders', role: 'repository' }],
+      entryPoints: [{ symbol: 'notifyWarehouse' }],
+      projectKind: 'library',
+    },
+  });
+  assert.ok(!p.files.some((f) => f.path === 'src/db.js'), 'excluded file must not be analyzed');
+  const sym = [...p.graph.symbols.values()].find((s) => s.name === 'listOrders')!;
+  assert.equal(sym.role, 'repository');
+  assert.match(sym.roleReason ?? '', /set by you/);
+  const pinned = p.entries.find((e) => e.kind === 'custom');
+  assert.equal(pinned?.handlerName, 'notifyWarehouse');
+  assert.ok(reach(p.flow(pinned!.id, { depth: 3 })).includes('warehouse.example.com'));
+  assert.equal(p.summary.profile.kinds[0].kind, 'library');
+});
+
+test('re-indexing reuses parse results for unchanged files', async () => {
+  const cache = new Map();
+  const a = await Project.open(fixture('spring-mini'), undefined, { cache });
+  const before = a.graph.facts.get('src/main/java/com/acme/shop/web/ProductController.java');
+  const b = await Project.open(fixture('spring-mini'), undefined, { cache });
+  assert.equal(b.graph.facts.get('src/main/java/com/acme/shop/web/ProductController.java'), before, 'unchanged file should not be re-parsed');
+  assert.deepEqual(routes(b).sort(), routes(a).sort());
+});

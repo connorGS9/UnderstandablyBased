@@ -29,6 +29,8 @@ function folderFromArgs(argv: string[]): string | null {
 let initialFolder: string | null = folderFromArgs(process.argv);
 
 if (app.isPackaged) process.env.UB_WASM_DIR = path.join(process.resourcesPath, 'wasm');
+// The worker inherits this and stores per-project settings there.
+process.env.UB_SETTINGS_FILE = path.join(app.getPath('userData'), 'project-settings.json');
 
 function startWorker() {
   // In packaged builds the worker and its native-ish deps (WASM parsers) are unpacked next to the asar.
@@ -37,6 +39,10 @@ function startWorker() {
   worker.on('message', (msg: any) => {
     if (msg.type === 'progress') {
       win?.webContents.send('ub:progress', msg.progress);
+      return;
+    }
+    if (msg.type === 'event') {
+      win?.webContents.send('ub:event', msg.event);
       return;
     }
     const p = pending.get(msg.id);

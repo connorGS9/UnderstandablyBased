@@ -1,3 +1,5 @@
+import { useEffect, useRef, useState } from 'react';
+import { useReactFlow, useStore as useFlowStore } from '@xyflow/react';
 import ELK from 'elkjs/lib/elk.bundled.js';
 
 const elk = new ELK();
@@ -58,4 +60,69 @@ export async function layoutGraph(
   const out = new Map<string, { x: number; y: number }>();
   for (const c of res.children ?? []) out.set(c.id, { x: c.x ?? 0, y: c.y ?? 0 });
   return out;
+}
+
+export interface MeasuredLayout {
+  key: string;
+  pos: Map<string, { x: number; y: number }>;
+  sizes: Map<string, { w: number; h: number }>;
+}
+
+/**
+ * Lay out a React Flow graph using the sizes the browser actually rendered (so labels always fit,
+ * whatever fonts the OS has). Nodes render invisibly first, get measured, then ELK positions them.
+ * `graphKey` must change whenever the set of nodes changes.
+ */
+export function useMeasuredLayout(
+  graphKey: string | null,
+  nodeIds: string[],
+  edges: LayoutEdge[],
+  opts: Parameters<typeof layoutGraph>[2],
+  partitionOf?: (id: string) => number | undefined,
+): MeasuredLayout | null {
+  const rf = useReactFlow();
+  // Count of nodes the browser has measured. Read from React Flow's internal store because measured
+  // sizes are not written back to controlled nodes; this also re-renders us when measuring finishes.
+  const measuredCount = useFlowStore((s) => {
+    let c = 0;
+    for (const n of s.nodeLookup.values()) if (n.measured?.width && n.measured?.height) c++;
+    return c;
+  });
+  const [state, setState] = useState<MeasuredLayout | null>(null);
+  const running = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!graphKey || state?.key === graphKey || running.current === graphKey || measuredCount < nodeIds.length) return;
+    const ns = nodeIds.map((id) => rf.getInternalNode(id));
+    if (ns.some((n) => !n?.measured?.width || !n.measured.height)) return;
+    running.current = graphKey;
+    const sizes = new Map(ns.map((n) => [n!.id, { w: Math.ceil(n!.measured.width!), h: Math.ceil(n!.measured.height!) }]));
+    layoutGraph(
+      nodeIds.map((id) => ({ id, width: sizes.get(id)!.w, height: sizes.get(id)!.h, partition: partitionOf?.(id) })),
+      edges,
+      opts,
+    )
+      .then((pos) => {
+        if (running.current === graphKey) setState({ key: graphKey, pos, sizes });
+      })
+      .catch((e) => console.error('layout failed', e))
+      .finally(() => {
+        if (running.current === graphKey) running.current = null;
+      });
+  });
+
+  return state?.key === graphKey ? state : null;
+}
+
+/** Bounding box of a laid-out graph. */
+export function boundsOf(l: MeasuredLayout) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const [id, p] of l.pos) {
+    const s = l.sizes.get(id) ?? { w: 0, h: 0 };
+    minX = Math.min(minX, p.x);
+    minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x + s.w);
+    maxY = Math.max(maxY, p.y + s.h);
+  }
+  return { minX, minY, maxX, maxY };
 }

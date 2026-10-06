@@ -144,6 +144,8 @@ export class Collector {
       exported: opts.exported,
       isDefaultExport: opts.isDefaultExport,
     };
+    const top = this.scopes[this.scopes.length - 1];
+    if (top?.kind === 'func' && top.sym.id !== sym.id) sym.parentFn = top.sym.id;
     this.facts.symbols.push(sym);
     return sym;
   }

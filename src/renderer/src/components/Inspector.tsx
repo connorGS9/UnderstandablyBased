@@ -84,6 +84,7 @@ export function Inspector() {
 function EntryHeader({ entry }: { entry: EntryPoint }) {
   const role = entryRole(entry);
   return (
+    <>
     <div className="insp-section" style={{ background: `color-mix(in srgb, ${roleColor(role)} 7%, transparent)` }}>
       <h4>
         {entry.kind === 'http-route' ? 'HTTP route' : ROLES[role].label} · {entry.framework}
@@ -124,6 +125,39 @@ function EntryHeader({ entry }: { entry: EntryPoint }) {
           ⚠ {n}
         </div>
       ))}
+    </div>
+    {!!entry.clientCallers?.length && <ClientCallers entry={entry} />}
+    </>
+  );
+}
+
+/** Frontend (or other service) code that sends requests to this route. */
+function ClientCallers({ entry }: { entry: EntryPoint }) {
+  const dive = useStore((s) => s.dive);
+  const traceFrom = useStore((s) => s.traceFrom);
+  const callers = entry.clientCallers!;
+  return (
+    <div className="insp-section">
+      <h4>Called over HTTP by ({callers.length})</h4>
+      <div className="faint" style={{ fontSize: 11.5, marginBottom: 6 }}>
+        Code in this project that sends requests to this route, usually the frontend. Click to read it; the flow icon draws its flow, across the network into this route.
+      </div>
+      {callers.slice(0, 30).map((c) => (
+        <div key={c.id + c.line} className="row" style={{ gap: 2 }}>
+          <button className="ref-row grow" onClick={() => dive({ id: c.id, label: c.name, role: 'client', file: c.file, line: c.line })} title={`${CONFIDENCE[c.confidence].label}\n${c.file}:${c.line}`}>
+            <RoleDot role="client" />
+            <span className="name grow ellipsis">{c.name}</span>
+            {c.confidence !== 'certain' && <span className={`conf-${c.confidence}`} style={{ fontSize: 11 }}>{c.confidence}</span>}
+            <span className="faint mono ellipsis" style={{ fontSize: 11, maxWidth: 120 }}>
+              {shortFile(c.file, 1)}:{c.line}
+            </span>
+          </button>
+          <button className="icon-btn" title="Trace the flow from this caller" aria-label={`Trace from ${c.name}`} onClick={() => traceFrom(c.id, c.name, 'client')}>
+            <IconFlow size={14} />
+          </button>
+        </div>
+      ))}
+      {callers.length > 30 && <div className="faint" style={{ fontSize: 11, padding: '4px 6px' }}>…and {callers.length - 30} more</div>}
     </div>
   );
 }
@@ -183,6 +217,25 @@ function SymbolInfo({ detail, isHandler }: { detail: SymbolDetail; isHandler: bo
           </div>
         )}
       </div>
+
+      {detail.routeCalls.length > 0 && (
+        <div className="insp-section">
+          <h4>Backend routes it calls ({detail.routeCalls.length})</h4>
+          {detail.routeCalls.map((rc, i) => {
+            const e = summary.entries.find((x) => x.id === rc.entryId);
+            return (
+              <button key={rc.entryId + i} className="ref-row" onClick={() => e && openEntry(e.id, e.label, entryRole(e), e.handlerId)} title={`${CONFIDENCE[rc.confidence].label}: ${rc.reason}`}>
+                {e?.kind === 'http-route' ? <MethodBadge method={e.method} /> : <RoleDot role="route" />}
+                <span className="name mono grow ellipsis">{e?.path ?? rc.label}</span>
+                {rc.confidence !== 'certain' && <span className={`conf-${rc.confidence}`} style={{ fontSize: 11 }}>{rc.confidence}</span>}
+                <span className="faint" style={{ fontSize: 11 }}>
+                  L{rc.line}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {detail.sinks.length > 0 && (
         <div className="insp-section">

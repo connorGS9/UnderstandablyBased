@@ -237,6 +237,14 @@ export class Project {
         }
       }
     }
+    // Closures defined inside a function (React `queryFn`/`onSubmit`, Python inner functions) run as part of it.
+    for (const s of this.graph.symbols.values()) {
+      if (!s.parentFn || !this.graph.symbols.has(s.parentFn)) continue;
+      const list = this.callbacks.get(s.parentFn) ?? [];
+      if (list.some((x) => x.id === s.id)) continue;
+      list.push({ id: s.id, line: s.range.sl, callee: '' });
+      this.callbacks.set(s.parentFn, list);
+    }
     report('analyze', 0, 1, 'Classifying code and finding entry points…');
     assignRoles(this.graph.symbols);
     applyRoleOverrides(this.graph.symbols, settings.roleOverrides);
@@ -271,6 +279,16 @@ export class Project {
       }
     }
     this.entries.sort((a, b) => kindOrder(a.kind) - kindOrder(b.kind) || (a.path ?? a.label).localeCompare(b.path ?? b.label) || (a.method ?? '').localeCompare(b.method ?? ''));
+    // Lazy route components (`component: () => import('./views/Users.vue')`) start at the component itself.
+    for (const e of this.entries) {
+      const calls = e.handlerId ? this.graph.callsFrom.get(e.handlerId) : undefined;
+      if (calls?.length === 1 && calls[0].site.callee === 'import' && calls[0].targets.length === 1) {
+        const t = this.graph.symbols.get(calls[0].targets[0]);
+        if (!t) continue;
+        e.handlerId = t.id;
+        e.handlerName = t.name;
+      }
+    }
     for (const e of this.entries) this.entryById.set(e.id, e);
     this.linkHttpCalls();
     this.computeReach();
@@ -335,10 +353,30 @@ export class Project {
   private linkHttpCalls() {
     const routes = routeTable(this.entries);
     if (!routes.length) return;
+    type Edge = (typeof this.sinks.edges extends Map<string, (infer E)[]> ? E : never);
+    const matched = new Map<Edge, NonNullable<ReturnType<typeof matchRoutes>>>();
+    // Wrappers recognized only by shape (`fooApiRequest('GET', '/agents')`) may call someone else's API whose
+    // paths happen to look like ours. Trust a wrapper only if most of its calls match routes in this project.
+    const wrapperStats = new Map<string, { calls: number; hits: number }>();
+    for (const list of this.sinks.edges.values()) {
+      for (const e of list) {
+        if (!e.http) continue;
+        const m = matchRoutes(e.http as Parameters<typeof matchRoutes>[0], routes);
+        if (m) matched.set(e, m);
+        if (e.http.wrapper) {
+          const st = wrapperStats.get(e.http.lib) ?? { calls: 0, hits: 0 };
+          st.calls++;
+          if (m && m.confidence !== 'guess') st.hits++;
+          wrapperStats.set(e.http.lib, st);
+        }
+      }
+    }
     for (const [from, list] of this.sinks.edges) {
       const keep = [];
       for (const e of list) {
-        const m = e.http ? matchRoutes(e.http as Parameters<typeof matchRoutes>[0], routes) : undefined;
+        const m = matched.get(e);
+        const st = e.http?.wrapper ? wrapperStats.get(e.http.lib) : undefined;
+        if (st && st.hits * 2 < st.calls) continue; // someone else's API: the wrapper's own request already shows where it goes
         if (!m) {
           keep.push(e);
           continue;
@@ -349,7 +387,8 @@ export class Project {
           const links = this.routeLinks.get(from) ?? [];
           links.push({ entryId: entry.id, line: e.line, confidence: m.confidence, reason: m.reason });
           this.routeLinks.set(from, links);
-          (entry.clientCallers ??= []).push({ id: from, name: caller ? (caller.container ? `${caller.container}.${caller.name}` : caller.name) : from, file: e.file, line: e.line, confidence: m.confidence });
+          const callers = (entry.clientCallers ??= []);
+          if (!callers.some((c) => c.id === from)) callers.push({ id: from, name: caller ? (caller.container ? `${caller.container}.${caller.name}` : caller.name) : from, file: e.file, line: e.line, confidence: m.confidence });
         }
       }
       this.sinks.edges.set(from, keep);
@@ -357,6 +396,7 @@ export class Project {
     const used = new Set([...this.sinks.edges.values()].flat().map((e) => e.to));
     for (const [id, n] of this.sinks.nodes) if (n.kind === 'external' && !used.has(id)) this.sinks.nodes.delete(id);
   }
+
 
   // ---------------- helpers ----------------
 
@@ -385,7 +425,29 @@ export class Project {
     if (!s || (s.kind !== 'method' && s.kind !== 'function')) return false;
     if (s.range.el - s.range.sl > 3) return false;
     if (!/^(get|set|is|has|to|as)[A-Z_]|^__(str|repr|eq|hash)__$|^(toString|hashCode|equals|valueOf)$/.test(s.name)) return false;
-    return !this.graph.callsFrom.get(id)?.length && !this.sinks.edges.get(id)?.length;
+    return !this.graph.callsFrom.get(id)?.length && !this.sinks.edges.get(id)?.length && !this.routeLinks.has(id);
+  }
+
+  private dataReach?: Set<string>;
+  /** Whether code eventually touches a table, an external system or a route in this project. */
+  reachesData(id: string): boolean {
+    if (!this.dataReach) {
+      // Walk callers backwards from everything that touches data: exact, and linear in the size of the graph.
+      const parents = new Map<string, string[]>();
+      for (const [from, list] of this.callbacks) for (const cb of list) parents.set(cb.id, [...(parents.get(cb.id) ?? []), from]);
+      const set = new Set<string>([...this.sinks.edges.keys(), ...this.routeLinks.keys()]);
+      const queue = [...set];
+      while (queue.length) {
+        const id = queue.pop()!;
+        for (const up of [...(this.graph.callsTo.get(id) ?? []).map((c) => c.from), ...(parents.get(id) ?? [])]) {
+          if (set.has(up)) continue;
+          set.add(up);
+          queue.push(up);
+        }
+      }
+      this.dataReach = set;
+    }
+    return this.dataReach.has(id);
   }
 
   private calleesOf(id: string, hideGuesses = false, showTrivial = false): { to: string; line: number; confidence: Confidence; reason: string; kind: FlowEdge['kind'] }[] {
@@ -405,6 +467,7 @@ export class Project {
       }
     }
     const sym = this.graph.symbols.get(id);
+    const uiCaller = sym?.role === 'view' || sym?.role === 'page';
     // Classes only expand to their data sinks (e.g. repository -> table) to avoid pulling in every method.
     if (!sym || (sym.kind !== 'class' && sym.kind !== 'interface' && sym.kind !== 'struct')) {
       for (const rc of this.graph.callsFrom.get(id) ?? []) {
@@ -414,6 +477,9 @@ export class Project {
           const ts = this.graph.symbols.get(t);
           if (ts?.role === 'test' && sym?.role !== 'test') continue;
           if (!showTrivial && this.isTrivial(t)) continue;
+          // Rendered components that never reach data or an API (buttons, dialogs, layout) are visual noise in a flow,
+          // and so is a UI component's display logic (formatting, computed values, i18n, telemetry).
+          if (!showTrivial && (rc.site.render || uiCaller) && !this.reachesData(t)) continue;
           seen.add(t);
           out.push({ to: t, line: rc.site.range.sl, confidence: rc.confidence, reason: rc.reason, kind: 'calls' });
         }
@@ -438,7 +504,8 @@ export class Project {
     for (const cb of this.callbacks.get(id) ?? []) {
       if (seen.has(cb.id)) continue;
       seen.add(cb.id);
-      out.push({ to: cb.id, line: cb.line, confidence: 'likely', reason: `callback passed to ${cb.callee}()`, kind: 'calls' });
+      if (!showTrivial && (!cb.callee || uiCaller) && !this.reachesData(cb.id)) continue;
+      out.push({ to: cb.id, line: cb.line, confidence: 'likely', reason: cb.callee ? `callback passed to ${cb.callee}()` : 'defined inside and run by it', kind: 'calls' });
     }
     for (const se of this.sinks.edges.get(id) ?? []) {
       if (seen.has(se.to)) continue;

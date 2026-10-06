@@ -309,15 +309,20 @@ export function extractJs(c: Collector, tree: Tree) {
           if (fn.type === 'call_expression' && /^create(Lazy)?FileRoute$/.test(field(fn, 'function')?.text ?? '')) {
             const p = unquote(children(field(fn, 'arguments'))[0]?.text ?? '');
             const opts = children(argsNode).find((a) => a.type === 'object');
-            if (p !== undefined) c.facts.jsxRoutes.push({ path: p.replace(/\$(\w+)/g, ':$1') || '/', ...(opts ? routeComponent(opts) : {}), style: 'tanstack', line: n.startPosition.row + 1, scope: c.scopeId });
+            if (p !== undefined) c.facts.jsxRoutes.push({ path: tanstackPath(p), ...(opts ? routeComponent(opts) : {}), style: 'tanstack', line: n.startPosition.row + 1, scope: c.scopeId });
           }
           // TanStack/Solid code-based routes: createRoute({ path: '/about', component: About })
           if (fn.type === 'identifier' && fn.text === 'createRoute') {
             const opts = children(argsNode).find((a) => a.type === 'object');
             const p = opts ? pairValue(opts, 'path') : null;
-            if (opts && p) c.facts.jsxRoutes.push({ path: (unquote(p.text) ?? '').replace(/\$(\w+)/g, ':$1'), ...routeComponent(opts), style: 'tanstack', line: n.startPosition.row + 1, scope: c.scopeId });
+            if (opts && p) c.facts.jsxRoutes.push({ path: tanstackPath(unquote(p.text) ?? ''), ...routeComponent(opts), style: 'tanstack', line: n.startPosition.row + 1, scope: c.scopeId });
           }
           const args = argsNode?.type === 'arguments' ? children(argsNode).map(toArg) : [];
+          // Lazy loading: () => import('./views/Users.vue') leads to that module's default export.
+          if (fn.type === 'import' && args[0]?.kind === 'string') {
+            c.addCall(n, 'import', undefined, args.slice(0, 1), false, fn);
+            return;
+          }
           if (fn.type === 'identifier') {
             if (fn.text === 'require') return;
             c.addCall(n, fn.text, undefined, args, false, fn);
@@ -428,6 +433,19 @@ export function extractJs(c: Collector, tree: Tree) {
                   const v = field(p, 'value')?.text;
                   if (k && v) c.facts.imports.push({ source, local: v, imported: k, line });
                 }
+              }
+            }
+            return;
+          }
+          // const { fetchUsers, saveUser: save } = useUsers() — functions handed out by a hook, composable or store
+          if (nm.type === 'object_pattern' && (value?.type === 'call_expression' || value?.type === 'await_expression')) {
+            const call = value.type === 'await_expression' ? value.namedChild(0) : value;
+            const fn = call?.type === 'call_expression' ? field(call, 'function') : null;
+            if (fn?.type === 'identifier') {
+              for (const p of children(nm)) {
+                const key = p.type === 'shorthand_property_identifier_pattern' ? p.text : p.type === 'pair_pattern' ? field(p, 'key')?.text : undefined;
+                const local = p.type === 'pair_pattern' ? field(p, 'value')?.text : key;
+                if (key && local && /^[\w$]+$/.test(local)) c.facts.vars.push({ scope: c.scopeId, name: local, member: key, call: { callee: fn.text, args: [] }, line });
               }
             }
             return;
@@ -554,7 +572,15 @@ export function extractJs(c: Collector, tree: Tree) {
         }
         case 'jsx_self_closing_element':
         case 'jsx_opening_element': {
-          const name = field(n, 'name')?.text;
+          const nameNode = field(n, 'name');
+          const name = nameNode?.text;
+          // Rendering a component is how React code "calls" it: <ItemsTable /> → ItemsTable, <Ui.Card> → Card.
+          // Lowercase tags are plain HTML elements.
+          if (nameNode && name && name !== 'Route' && /^[A-Z]/.test(name.split('.').pop()!) && c.scopeId !== c.fileScope) {
+            const dot = name.lastIndexOf('.');
+            const last = nameNode.type === 'member_expression' ? field(nameNode, 'property') : nameNode;
+            c.addCall(n, name.slice(dot + 1), dot > 0 ? name.slice(0, dot) : undefined, [], false, last).render = true;
+          }
           if (name !== 'Route') return;
           let path: string | undefined;
           let component: string | undefined;
@@ -580,4 +606,16 @@ export function extractJs(c: Collector, tree: Tree) {
     c,
   );
   void src;
+}
+
+/**
+ * URL of a TanStack Router file route id: `/_layout/posts/$postId` → `/posts/:postId`.
+ * `_name` segments are pathless layouts, `(name)` are groups, a trailing `_` un-nests, `$` alone is a splat.
+ */
+function tanstackPath(id: string): string {
+  const segs = id
+    .split('/')
+    .filter((s) => s && !s.startsWith('_') && !/^\(.*\)$/.test(s))
+    .map((s) => (s === '$' ? '*' : s.replace(/_$/, '').replace(/^\$(\w+)$/, ':$1')));
+  return '/' + segs.join('/');
 }

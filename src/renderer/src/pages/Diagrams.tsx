@@ -138,7 +138,25 @@ function GraphDiagram({ nodes, edges, partitions, emptyText }: { nodes: DiagramN
   const ids = useMemo(() => visible.map((n) => n.id), [visible]);
   const layoutEdges = useMemo(() => visEdges.map((e) => ({ id: e.id, from: e.from, to: e.to })), [visEdges]);
   const roleOf = useMemo(() => new Map(visible.map((n) => [n.id, n.role])), [visible]);
-  const layout = useMeasuredLayout(ids.join('|'), ids, layoutEdges, { partitions, layerGap: 90, nodeGap: 14 }, (id) => ROLE_RANK[roleOf.get(id) ?? 'other']);
+  // Full-stack projects: when frontend code calls routes of this project, put the backend in columns after the
+  // frontend (page → component → API client ⇢ route → controller → table) so HTTP arrows read left to right.
+  const backend = useMemo(() => {
+    const linked = visEdges.filter((e) => e.kind === 'http' && e.to.startsWith('entries:'));
+    if (!linked.length) return null;
+    const out = new Map<string, string[]>();
+    for (const e of visEdges) if (e.kind !== 'http' || !e.to.startsWith('entries:')) out.set(e.from, [...(out.get(e.from) ?? []), e.to]);
+    const side = new Set<string>();
+    const queue = visible.filter((n) => n.id.startsWith('entries:http-route:')).map((n) => n.id);
+    while (queue.length) {
+      const id = queue.pop()!;
+      if (side.has(id)) continue;
+      side.add(id);
+      queue.push(...(out.get(id) ?? []));
+    }
+    return side;
+  }, [visEdges, visible]);
+  const BACKEND_OFFSET = 8;
+  const layout = useMeasuredLayout(ids.join('|') + (backend ? '|fs' : ''), ids, layoutEdges, { partitions, layerGap: 90, nodeGap: 14 }, (id) => ROLE_RANK[roleOf.get(id) ?? 'other'] + (backend?.has(id) ? BACKEND_OFFSET : 0));
   useFitOnLayout(layout?.key);
 
   const neighbors = useMemo(() => {
@@ -167,7 +185,8 @@ function GraphDiagram({ nodes, edges, partitions, emptyText }: { nodes: DiagramN
     () =>
       visEdges.map((e) => {
         const on = !neighbors || (neighbors.has(e.from) && neighbors.has(e.to) && (e.from === selected || e.to === selected));
-        const color = e.kind === 'reads' || e.kind === 'writes' ? 'var(--role-table)' : e.kind === 'http' ? 'var(--role-external)' : e.kind === 'publishes' || e.kind === 'subscribes' || e.kind === 'uses' ? 'var(--role-channel)' : 'var(--edge)';
+        const network = e.kind === 'http' && e.to.startsWith('entries:');
+        const color = e.kind === 'reads' || e.kind === 'writes' ? 'var(--role-table)' : network ? 'var(--role-route)' : e.kind === 'http' ? 'var(--role-external)' : e.kind === 'publishes' || e.kind === 'subscribes' || e.kind === 'uses' ? 'var(--role-channel)' : 'var(--edge)';
         return {
           id: e.id,
           source: e.from,
@@ -176,7 +195,8 @@ function GraphDiagram({ nodes, edges, partitions, emptyText }: { nodes: DiagramN
           hidden: !layout,
           markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12, color },
           style: { stroke: color, strokeWidth: 1 + Math.log2(1 + (4 * e.weight) / maxW), opacity: on ? 0.9 : 0.1 },
-          label: e.kind === 'reads' || e.kind === 'writes' ? e.kind : undefined,
+          label: e.kind === 'reads' || e.kind === 'writes' ? e.kind : network ? 'HTTP' : undefined,
+          animated: network,
           labelStyle: { fill: 'var(--text-dim)', fontSize: 10 },
           labelBgStyle: { fill: 'var(--bg)' },
         };

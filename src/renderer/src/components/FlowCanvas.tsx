@@ -183,15 +183,20 @@ function Canvas({ rootId }: { rootId: string }) {
 
   const edges: Edge[] = useMemo(() => {
     if (!graph) return [];
+    const entryIds = new Set(graph.nodes.filter((n) => n.kind === 'entry').map((n) => n.id));
     return graph.edges.map((e) => {
-      const st = edgeStyle(e.kind, e.confidence);
+      // A request crossing the network into a route of this project (frontend → backend).
+      const crossesNetwork = e.kind === 'http' && entryIds.has(e.to);
+      const st = crossesNetwork ? { ...edgeStyle('calls', e.confidence), stroke: 'var(--role-route)', width: 2 } : edgeStyle(e.kind, e.confidence);
       const highlighted = e.from === selected || e.to === selected;
       return {
         id: e.id,
         source: e.from,
         target: e.to,
         type: 'smoothstep',
-        label: e.label,
+        label: crossesNetwork ? 'HTTP request' : e.label,
+        animated: crossesNetwork,
+        className: crossesNetwork ? 'edge-network' : undefined,
         hidden: !layout,
         markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: highlighted ? 'var(--accent)' : st.stroke },
         style: { stroke: highlighted ? 'var(--accent)' : st.stroke, strokeWidth: highlighted ? 2.2 : st.width, strokeDasharray: st.dash, opacity: st.opacity },
@@ -244,9 +249,9 @@ function Canvas({ rootId }: { rootId: string }) {
           <input type="checkbox" checked={prefs.hideGuesses} onChange={(e) => setPrefs({ hideGuesses: e.target.checked })} />
           Hide guesses
         </label>
-        <label className="toggle" title="Getters, setters and other one-line helpers are hidden by default because they rarely explain the flow">
+        <label className="toggle" title="Getters, setters, one-line helpers and purely visual components (buttons, dialogs, layout) are hidden by default because they rarely explain the flow">
           <input type="checkbox" checked={prefs.showTrivial} onChange={(e) => setPrefs({ showTrivial: e.target.checked })} />
-          Getters/setters
+          Minor code
         </label>
         <button className="icon-btn" title="Fit everything on screen" aria-label="Fit to screen" onClick={() => rf.fitView({ padding: 0.12, duration: 250 })}>
           <IconFit />
@@ -262,6 +267,11 @@ function Canvas({ rootId }: { rootId: string }) {
         <span title={CONFIDENCE.guess.explain} style={{ opacity: 0.75 }}>
           ··· guess
         </span>
+        {graph?.edges.some((e) => e.kind === 'http' && nodeById.get(e.to)?.kind === 'entry') && (
+          <span style={{ color: 'var(--role-route)' }} title="The flow crosses the network here: this code sends an HTTP request that a route in this project answers">
+            ⇢ HTTP request
+          </span>
+        )}
         {graph?.truncated && <span style={{ color: 'var(--warn)' }}>Flow is large; some branches are collapsed.</span>}
       </div>
       {error && (

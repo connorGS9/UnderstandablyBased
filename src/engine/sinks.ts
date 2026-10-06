@@ -125,7 +125,8 @@ export function buildSinks(graph: CodeGraph, tables: DbTable[]): SinkIndex {
     if (!scope.startsWith('file:')) return scope;
     // File-scope strings (e.g. Java SQL constants): attach to the enclosing class.
     const cls = (graph.symbolsByFile.get(file) ?? []).find((s) => (s.kind === 'class' || s.kind === 'struct') && s.range.sl <= line && s.range.el >= line);
-    return cls?.id;
+    // A Vue/Svelte component's script runs for every instance: its top level is the component itself.
+    return cls?.id ?? (/\.(vue|svelte)$/.test(file) ? scope : undefined);
   };
 
   // 1. SQL strings

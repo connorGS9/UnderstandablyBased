@@ -36,6 +36,9 @@ function dataflow(p: Project): Diagrams['dataflow'] {
   let dirDepth = 99;
   const dirOf = (file: string) => posix.dirname(file).split('/').slice(0, dirDepth).join('/');
   const compOfSymbol = (id: string, byDir: boolean): string | undefined => {
+    // Frontend code calling a route of this project over HTTP points at that route's group.
+    const entry = p.entryById.get(id);
+    if (entry) return entry.handlerId && entry.kind !== 'channel' ? `entries:${entry.kind}:${entry.group}` : undefined;
     if (id.startsWith('file:')) return byDir ? `dir:${dirOf(id.slice(5))}` : id;
     const s = g.symbols.get(id);
     if (!s) return p.sinks.nodes.has(id) ? id : undefined;
@@ -51,6 +54,7 @@ function dataflow(p: Project): Diagrams['dataflow'] {
     const ensure = (cid: string): (DiagramNode & { roles: Role[] }) | undefined => {
       let n = nodes.get(cid);
       if (n) return n;
+      if (cid.startsWith('entries:')) return undefined; // entry groups are created up front
       if (p.sinks.nodes.has(cid)) {
         const sk = p.sinks.nodes.get(cid)!;
         n = { id: cid, label: sk.label, sublabel: sk.detail, role: sk.kind === 'table' ? 'table' : sk.kind === 'channel' ? 'channel' : 'external', roles: [], target: sk.kind === 'channel' ? `channel:${cid}` : undefined };
@@ -106,7 +110,7 @@ function dataflow(p: Project): Diagrams['dataflow'] {
       fn.roles.push(s.role ?? 'other');
       fn.size = (fn.size ?? 0) + 1;
       for (const c of p.calleesFor(s.id)) {
-        if (!p.sinks.nodes.has(c.to) && !inScope(c.to)) continue;
+        if (!p.sinks.nodes.has(c.to) && !p.entryById.has(c.to) && !inScope(c.to)) continue;
         const to = compOfSymbol(c.to, byDir);
         if (!to || !ensure(to)) continue;
         addEdge(from, to, c.kind);

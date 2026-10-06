@@ -1,5 +1,5 @@
 import path from 'node:path';
-import type { Annotation, Arg, CallSite, EntryPoint, FileFacts } from './types';
+import type { Annotation, Arg, CallSite, CodeSymbol, EntryPoint, FileFacts } from './types';
 import type { CodeGraph } from './graph';
 import type { SinkIndex } from './sinks';
 
@@ -691,6 +691,143 @@ function nextRoutes(graph: CodeGraph, out: EntryCollector, hasNext: boolean) {
   }
 }
 
+// ---------------- SvelteKit, Nuxt, Remix / React Router v7: file-system routes ----------------
+
+/** `[id]` → `:id`, `[...rest]` → `*rest`, `[[lang]]` → `:lang` (SvelteKit / Nuxt bracket syntax). */
+const bracketSeg = (s: string) =>
+  s.replace(/^\[\[(\w+)\]\]$/, ':$1').replace(/^\[\.\.\.(\w+)\]$/, '*$1').replace(/^\[(\w+)(?:=\w+)?\]$/, ':$1').replace(/\[(\w+)\]/g, ':$1');
+
+function topLevelSym(graph: CodeGraph, file: string, name: string): CodeSymbol | undefined {
+  return graph.symbolsByFile.get(file)?.find((s) => s.name === name && !s.container && !s.parentFn);
+}
+
+/** The function handed to a wrapper at the top level: `export default defineEventHandler(async (e) => …)`. */
+function wrappedHandler(graph: CodeGraph, file: string, wrappers: RegExp): CodeSymbol | undefined {
+  const f = graph.facts.get(file);
+  for (const c of f?.calls ?? []) {
+    if (c.from !== `file:${file}` || !wrappers.test(c.callee)) continue;
+    const fn = c.args.find((a) => a.kind === 'func' && a.symbolId);
+    if (fn) return graph.symbols.get(fn.symbolId!);
+  }
+  return undefined;
+}
+
+function fileRoutes(graph: CodeGraph, out: EntryCollector, deps: string) {
+  const svelteKit = /(^|\s)@sveltejs\/kit(\s|$)/.test(deps);
+  const nuxt = /(^|\s)nuxt(\s|$)/.test(deps);
+  const remix = /(^|\s)(@remix-run\/(react|node|cloudflare|deno|dev)|@react-router\/(dev|node|serve)|react-router-dom|react-router)(\s|$)/.test(deps);
+  const remixFramework = /(^|\s)(@remix-run\/(react|node|cloudflare|deno|dev)|@react-router\/(dev|node|serve))(\s|$)/.test(deps);
+  for (const file of graph.facts.keys()) {
+    // SvelteKit: src/routes/blog/[slug]/+page.svelte, +page.ts (load), +server.ts (GET/POST…)
+    const sk = svelteKit ? /^(?:(.*)\/)?src\/routes\/(?:(.*)\/)?\+(page|server|layout)(\.server)?\.(svelte|ts|js)$/.exec(file) : null;
+    if (sk) {
+      const segs = (sk[2] ?? '').split('/').filter((x) => x && !/^\(.*\)$/.test(x));
+      const urlPath = joinPaths(...segs.map(bracketSeg));
+      const group = segs[0] ?? '/';
+      const dir = file.slice(0, file.lastIndexOf('/') + 1);
+      if (sk[3] === 'server') {
+        for (const m of HTTP_METHODS.concat('fallback')) {
+          const h = topLevelSym(graph, file, m);
+          if (h) out.add({ kind: 'http-route', label: '', method: m === 'fallback' ? 'ANY' : m, path: urlPath, group, framework: 'SvelteKit endpoint', handlerId: h.id, handlerName: m, file, line: h.range.sl });
+        }
+      } else if (sk[3] === 'page' && sk[5] === 'svelte') {
+        // load() in +page.ts / +page.server.ts runs before the page renders; form actions handle POSTs.
+        const middleware: { name: string; id?: string }[] = [];
+        for (const f of [`${dir}+page.server.ts`, `${dir}+page.server.js`, `${dir}+page.ts`, `${dir}+page.js`]) {
+          const load = graph.facts.has(f) ? topLevelSym(graph, f, 'load') : undefined;
+          if (load) middleware.push({ name: `load (${posix.basename(f)})`, id: load.id });
+        }
+        out.add({ kind: 'page', label: '', path: urlPath, group: 'Pages', framework: 'SvelteKit', handlerId: `file:${file}`, handlerName: posix.basename(file), middleware: middleware.length ? middleware : undefined, file, line: 1 });
+        const serverFile = [`${dir}+page.server.ts`, `${dir}+page.server.js`].find((f) => graph.facts.has(f));
+        const actions = serverFile ? topLevelSym(graph, serverFile, 'actions') : undefined;
+        if (serverFile && (actions || graph.varsByScope.get(`file:${serverFile}`)?.has('actions'))) {
+          const h = actions ?? graph.symbolsByFile.get(serverFile)?.find((x) => x.parentFn === undefined && x.container === undefined && x.kind !== 'class' && x.name !== 'load');
+          out.add({ kind: 'http-route', label: '', method: 'POST', path: urlPath, group, framework: 'SvelteKit form actions', handlerId: h?.id ?? `file:${serverFile}`, handlerName: 'actions', file: serverFile, line: h?.range.sl ?? 1 });
+        }
+      }
+      continue;
+    }
+    // Nuxt: pages/users/[id].vue, server/api/users/[id].get.ts, server/routes/feed.xml.ts
+    const nuxtPage = nuxt ? /^(?:(.*)\/)?pages\/(.*)\.vue$/.exec(file) : null;
+    if (nuxtPage && !/(^|\/)components\//.test(nuxtPage[2])) {
+      const segs = nuxtPage[2].split('/').filter((x) => !/^\(.*\)$/.test(x));
+      if (segs[segs.length - 1] === 'index') segs.pop();
+      out.add({ kind: 'page', label: '', path: joinPaths(...segs.map(bracketSeg)), group: 'Pages', framework: 'Nuxt', handlerId: `file:${file}`, handlerName: posix.basename(file), file, line: 1 });
+      continue;
+    }
+    const nuxtApi = nuxt ? /^(?:(.*)\/)?server\/(api|routes)\/(.*?)(?:\.(get|post|put|patch|delete|head|options))?\.(ts|js|mjs)$/.exec(file) : null;
+    if (nuxtApi) {
+      const segs = nuxtApi[3].split('/');
+      if (segs[segs.length - 1] === 'index') segs.pop();
+      const urlPath = joinPaths(nuxtApi[2] === 'api' ? 'api' : undefined, ...segs.map(bracketSeg));
+      const h = wrappedHandler(graph, file, /^(defineEventHandler|eventHandler|defineCachedEventHandler|defineWebSocketHandler)$/);
+      const method = nuxtApi[4]?.toUpperCase() ?? 'ANY';
+      out.add({ kind: 'http-route', label: '', method, path: urlPath, group: segs[0] ?? '/', framework: 'Nuxt server route', handlerId: h?.id ?? `file:${file}`, handlerName: h ? 'event handler' : posix.basename(file), file, line: h?.range.sl ?? 1 });
+      continue;
+    }
+    // Remix / React Router v7 framework mode: app/routes/posts.$postId.tsx, app/routes/_auth.login/route.tsx
+    const rx = remixFramework || remix ? /^(?:(.*)\/)?app\/routes\/([^/]+?)(?:\/route)?\.(tsx|ts|jsx|js)$/.exec(file) : null;
+    if (rx && (remixFramework || graph.facts.has(file.replace(/routes\/.*$/, 'root.tsx')))) {
+      remixRoute(graph, out, file, flatRoutePath(rx[2]), rx[2].split('.')[0].replace(/^_+/, '') || '/');
+    }
+  }
+  // React Router v7 config: app/routes.ts with route("products/:pid", "./routes/product.tsx"), index(), prefix()
+  if (remix) {
+    for (const [file, f] of graph.facts) {
+      if (!/(^|\/)app\/routes\.(ts|js)$/.test(file)) continue;
+      const dir = posix.dirname(file);
+      const walk = (items: Arg[], prefix: string) => {
+        for (const a of items) {
+          if (a.kind === 'array') walk(a.items ?? [], prefix);
+          if (a.kind !== 'call') continue;
+          const args = a.items ?? [];
+          const str = (i: number) => (args[i]?.kind === 'string' ? args[i].value : undefined);
+          let path: string | undefined;
+          let mod: string | undefined;
+          let children: Arg[] = [];
+          if (a.callee === 'route') [path, mod, children] = [str(0), str(1), args.slice(2)];
+          else if (a.callee === 'index') [path, mod] = ['', str(0)];
+          else if (a.callee === 'layout') [path, mod, children] = ['', str(0), args.slice(1)];
+          else if (a.callee === 'prefix') [path, children] = [str(0), args.slice(1)];
+          else continue;
+          const full = joinPaths(prefix, path);
+          if (mod) {
+            const target = ['', '.tsx', '.ts', '.jsx', '.js'].map((ext) => posix.normalize(posix.join(dir, mod!)) + ext).find((x) => graph.facts.has(x));
+            if (target && a.callee !== 'layout') remixRoute(graph, out, target, full, full.split('/').filter(Boolean)[0] ?? '/');
+          }
+          walk(children, a.callee === 'layout' ? prefix : full);
+        }
+      };
+      const cfg = f.calls.find((c) => c.from === `file:${file}` && c.args.some((a) => a.kind === 'array'));
+      if (cfg) walk(cfg.args, '');
+      else walk(f.calls.filter((c) => c.from === `file:${file}` && /^(route|index|prefix|layout)$/.test(c.callee)).map((c) => ({ kind: 'call', text: '', callee: c.callee, items: c.args, line: c.range.sl }) as Arg), '');
+    }
+  }
+}
+
+/**
+ * Remix flat routes: `.` separates segments, `$id` is a param, `$` alone a splat, `_index` an index route,
+ * a leading `_` a pathless layout, a trailing `_` opts out of nesting, `(seg)` is optional, `[.]` escapes.
+ */
+function flatRoutePath(name: string): string {
+  const segs = name
+    .replace(/\[(.)\]/g, (_, ch: string) => `\u0000${ch.charCodeAt(0)}\u0000`)
+    .split('.')
+    .filter((s) => s && !s.startsWith('_') && s !== 'route')
+    .map((s) => s.replace(/_$/, '').replace(/^\((.*)\)$/, '$1').replace(/^\$$/, '*').replace(/^\$(\w+)$/, ':$1').replace(/\u0000(\d+)\u0000/g, (_, c: string) => String.fromCharCode(Number(c))));
+  return '/' + segs.join('/');
+}
+
+function remixRoute(graph: CodeGraph, out: EntryCollector, file: string, urlPath: string, group: string) {
+  const def = graph.lookupExport(file, 'default')?.sym ?? graph.symbolsByFile.get(file)?.find((s) => s.isDefaultExport);
+  const loader = topLevelSym(graph, file, 'loader') ?? topLevelSym(graph, file, 'clientLoader');
+  const action = topLevelSym(graph, file, 'action') ?? topLevelSym(graph, file, 'clientAction');
+  if (def) out.add({ kind: 'page', label: '', path: urlPath, group: 'Pages', framework: 'Remix / React Router', handlerId: def.id, handlerName: def.name, middleware: loader ? [{ name: loader.name, id: loader.id }] : undefined, file, line: def.range.sl });
+  // Loaders answer GET requests (page data, or a resource route without a component); actions answer form POSTs.
+  if (loader && !def) out.add({ kind: 'http-route', label: '', method: 'GET', path: urlPath, group, framework: 'Remix resource route', handlerId: loader.id, handlerName: loader.name, file, line: loader.range.sl });
+  if (action) out.add({ kind: 'http-route', label: '', method: 'POST', path: urlPath, group, framework: 'Remix action', handlerId: action.id, handlerName: action.name, file, line: action.range.sl });
+}
+
 // ---------------- client-side routers: React Router, Vue Router, Angular, TanStack ----------------
 
 const ROUTER_LIBS: [RegExp, string][] = [
@@ -821,6 +958,7 @@ export function extractEntries(graph: CodeGraph, sinks: SinkIndex, ctx: { pkgJso
   djangoRoutes(graph, out);
   callRoutes(graph, out, ctx.projectHasServerLib);
   nextRoutes(graph, out, ctx.hasNext);
+  fileRoutes(graph, out, ctx.pkgJsons.map((p) => Object.keys({ ...(p.json.dependencies ?? {}), ...(p.json.devDependencies ?? {}) }).join(' ')).join(' '));
   clientRoutes(graph, out, ctx.hasClientRouter);
   jobEntries(graph, out);
   processEntries(graph, out, ctx.pkgJsons);

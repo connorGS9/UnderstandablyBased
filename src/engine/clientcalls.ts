@@ -22,6 +22,8 @@ export interface HttpCall {
   lib: string;
   /** URL as written, for display. */
   raw: string;
+  /** Recognized only by the shape of a project-specific wrapper call (method + path arguments). */
+  wrapper?: boolean;
 }
 
 const FETCH_FNS = /^(fetch|\$fetch|ofetch|useFetch|useLazyFetch|ky|got|superagent|axios|useSWR|useSWRImmutable|useSWRInfinite|wretch|xhr)$/;
@@ -40,6 +42,22 @@ const CLIENT_FACTORIES: [RegExp, RegExp, string][] = [
 const INTERNAL_HOST = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|[a-z][\w-]*)(:\d+)?$/i; // single-label hosts are docker/k8s service names
 
 const isJs = (l: Lang) => l === 'javascript' || l === 'typescript' || l === 'tsx';
+
+/** HTTP method named by a client method (`post`, `GetAsync`, `getForObject`...), or '' if it names none. */
+function verbMethod(callee: string): string {
+  const m = callee.toUpperCase().replace(/ASYNC$|FORJSONASYNC$|ASJSONASYNC$/, '').replace(/^DEL$/, 'DELETE').replace(/^GETJSON$/, 'GET').replace(/FOROBJECT$|FORENTITY$/, '');
+  return /^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)$/.test(m) ? m : '';
+}
+
+/**
+ * Receivers as written can be expressions: `(options?.client ?? client)` in hey-api generated SDKs,
+ * `(this.client || axios)`. Return each alternative so any of them can identify the client.
+ */
+function receiverAlternatives(recv: string): string[] {
+  let r = recv.trim();
+  while (r.startsWith('(') && r.endsWith(')')) r = r.slice(1, -1).trim();
+  return r.split(/\?\?|\|\|/).map((x) => x.trim()).filter(Boolean);
+}
 
 /** Find a variable by name: in the current function, the file, or imported from another file. */
 function findVar(graph: CodeGraph, file: string, scope: string, name: string): { v: VarFact; file: string } | undefined {
@@ -136,11 +154,15 @@ function splitConcat(s: string): string[] {
   return out;
 }
 
+/** A URL path or absolute URL, not arbitrary text: `/users/{}`, `{}/items`, `http://api/x`. */
+const looksLikePath = (u: string) => /^(\/[\w{}.~:@-]|\{\}\/|https?:\/\/)/.test(u) && !/\s/.test(u);
+
 const objItem = (a: Arg | undefined, ...keys: string[]) => a?.kind === 'object' ? a.items?.find((i) => i.key && keys.includes(i.key)) : undefined;
 
 /** Turn a raw URL into a route-comparable path, noting the host of absolute URLs. */
 function finish(raw: { url: string; unknownPrefix: boolean } | undefined, method: string | undefined, lib: string, base?: string): HttpCall {
-  if (!raw) return { method, lib, raw: '' };
+  // Nothing readable (`fetch(url)`, `ctx.baseUrl + endpoint`): we know a request happens, not where.
+  if (!raw || !/[a-z0-9]/i.test(raw.url.replace(/\{\}/g, ''))) return { method, lib, raw: '' };
   let url = raw.url.trim();
   let unknownPrefix = raw.unknownPrefix;
   let host: string | undefined;
@@ -167,6 +189,9 @@ function finish(raw: { url: string; unknownPrefix: boolean } | undefined, method
   return { method, path: url.startsWith('/') || unknownPrefix ? url : '/' + url, unknownPrefix, host, external, lib, raw: raw.url };
 }
 
+/** Wrappers usually prepend a base URL we cannot see (`ctx.baseUrl + endpoint`), so a relative path is a suffix. */
+const viaWrapper = (c: HttpCall): HttpCall => ({ ...c, wrapper: true, unknownPrefix: c.unknownPrefix || !c.host });
+
 /** If this call is an HTTP request, describe it. */
 export function detectHttpCall(graph: CodeGraph, file: string, lang: Lang, site: CallSite): HttpCall | undefined {
   const recv = (site.receiver ?? '').replace(/->/g, '.').replace(/\?\./g, '.').replace(/\(\)$/, '');
@@ -179,8 +204,12 @@ export function detectHttpCall(graph: CodeGraph, file: string, lang: Lang, site:
     const urlItem = objItem(a, 'url');
     if (!urlItem) continue;
     const m = objItem(a, 'method', 'type');
-    if (m || CONFIG_FNS.test(callee)) {
-      return finish(readUrl(graph, file, scope, urlItem), (m?.value ?? m?.text.replace(/['"]/g, ''))?.toUpperCase(), callee === '__request' ? 'generated client' : recv || callee);
+    // `client.post({ url: '/api/items' })`: the verb is the method name (hey-api / openapi-ts generated SDKs).
+    const verb = recv ? verbMethod(callee) : '';
+    if (m || verb || CONFIG_FNS.test(callee)) {
+      const method = (m?.value ?? m?.text.replace(/['"]/g, ''))?.toUpperCase() || verb || undefined;
+      const generated = callee === '__request' || /\bclient\b/.test(recv) && /\?\?/.test(recv);
+      return finish(readUrl(graph, file, scope, urlItem), method, generated ? 'generated client' : receiverAlternatives(recv).pop() || callee);
     }
   }
 
@@ -196,8 +225,9 @@ export function detectHttpCall(graph: CodeGraph, file: string, lang: Lang, site:
 
   // 3. Method-style clients: axios.get(url), this.http.post(url) (Angular), api.get(url) (axios instance), client.GET(path) (openapi-fetch)
   if (recv && VERBS.test(callee)) {
-    const head = recv.split('.')[0];
-    let isClient = CLIENT_RECV.test(recv) || /http|rest|webclient/i.test(recv.split('.').pop() ?? '');
+    const alts = receiverAlternatives(recv);
+    const head = alts[alts.length - 1].split('.')[0];
+    let isClient = alts.some((r) => CLIENT_RECV.test(r) || /http|rest|webclient/i.test(r.split('.').pop() ?? ''));
     let base: string | undefined;
     // Instances: const api = axios.create({ baseURL: '/api' })
     const varName = head === 'this' ? undefined : head;
@@ -217,18 +247,33 @@ export function detectHttpCall(graph: CodeGraph, file: string, lang: Lang, site:
     }
     // Angular: constructor(private http: HttpClient)
     if (!isClient) {
-      const t = graph.inferType(recv, graph.symbols.get(scope), file);
+      const t = graph.inferType(alts[alts.length - 1], graph.symbols.get(scope), file);
       if (t && /^(HttpClient|HttpService|AxiosInstance|RestTemplate|WebClient|HttpClientModule)$/.test(t)) isClient = true;
     }
     if (!isClient) return undefined;
-    let method = callee.toUpperCase().replace(/ASYNC$|FORJSONASYNC$|ASJSONASYNC$/, '').replace(/^DEL$/, 'DELETE').replace(/^GETJSON$/, 'GET').replace(/FOROBJECT$|FORENTITY$/, '');
-    if (!/^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)$/.test(method)) method = '';
+    const method = verbMethod(callee);
     const urlArg = callee === 'request' || callee === 'exchange' ? args.find((a) => a.kind === 'string') : args[0];
     if (callee === 'request' && objItem(args[0], 'url')) return undefined; // handled as config object above
     return finish(readUrl(graph, file, scope, urlArg), method || undefined, recv, base);
   }
 
-  // 4. Go net/http and libcurl
+  // 4. Project-specific wrappers, recognized by shape:
+  //    makeRestApiRequest(ctx, 'GET', '/workflows')  — an HTTP method literal followed by a URL
+  //    apiGet('/users'), httpPost(`/items/${id}`)     — the verb is in the wrapper's name
+  if (!recv || !/^(console|logger|log|expect|assert|t|cy|page)$/.test(recv)) {
+    const mi = args.findIndex((a) => a.kind === 'string' && /^(GET|POST|PUT|PATCH|DELETE|HEAD)$/.test(a.value ?? ''));
+    if (mi >= 0) {
+      const raw = readUrl(graph, file, scope, args[mi + 1]);
+      if (raw && looksLikePath(raw.url)) return viaWrapper(finish(raw, args[mi].value, callee));
+    }
+    const named = /^(?:api|http|rest|fetch|request|do|send)(Get|Post|Put|Patch|Delete)\w*$|^(get|post|put|patch|delete)(?:Json|JSON|Request|Api|Data)$/.exec(callee);
+    if (named) {
+      const raw = readUrl(graph, file, scope, args[0]);
+      if (raw && looksLikePath(raw.url)) return viaWrapper(finish(raw, (named[1] ?? named[2]).toUpperCase(), callee));
+    }
+  }
+
+  // 5. Go net/http and libcurl
   if (recv === 'http' && /^(Get|Post|Head|PostForm|NewRequest|NewRequestWithContext)$/.test(callee)) {
     const urlArg = callee.startsWith('NewRequest') ? args.find((a, i) => i >= 1 && a.kind === 'string') : args[0];
     const m = callee.startsWith('NewRequest') ? args.find((a) => a.kind === 'string' && /^(GET|POST|PUT|PATCH|DELETE)$/.test(a.value ?? ''))?.value : callee.toUpperCase().replace('POSTFORM', 'POST');
@@ -250,7 +295,7 @@ function segsOf(path: string, isRoute: boolean): Seg[] {
       if (isRoute) {
         if (/^(\*|\*\*|\.\.\.|\[\.\.\.|\[\[\.\.\.|\{\*|\{\.\.\.)/.test(s) || /^\*\w*$/.test(s)) return '**';
         if (/^:|^\{.*\}$|^<.*>$|^\[.*\]$|^\$/.test(s) || /\{[^}]*\}/.test(s)) return '{}';
-      } else if (s.includes('{}')) return '{}';
+      } else if (s.includes('{}') || /^\{\w+\}$/.test(s)) return '{}'; // `${id}` or OpenAPI-style `{id}` from generated clients
       return s.toLowerCase();
     });
 }

@@ -80,6 +80,8 @@ export interface CodeSymbol {
   container?: string;
   /** Enclosing class symbol id, if any. */
   containerId?: string;
+  /** Enclosing function symbol id for closures (`queryFn`, `onSubmit` defined inside a component). */
+  parentFn?: string;
   file: string;
   lang: Lang;
   range: Range;
@@ -107,6 +109,8 @@ export interface CallSite {
   /** Range of just the callee name (what the code view underlines). */
   nameRange?: Range;
   isNew?: boolean;
+  /** A component rendered in JSX (`<UserList />`) rather than a plain call. */
+  render?: boolean;
 }
 
 export interface ImportFact {
@@ -149,6 +153,8 @@ export interface VarFact {
   call?: { callee: string; receiver?: string; args: Arg[] };
   /** Plain value text when not a call (truncated). */
   valueText?: string;
+  /** Destructured from the call's result: `const { save } = useForm()` records name `save`, member `save`. */
+  member?: string;
   line: number;
 }
 
@@ -289,7 +295,7 @@ export interface SinkEdge {
   file: string;
   detail?: string;
   /** For HTTP calls: what was requested, used to link the call to a route in this project. */
-  http?: { method?: string; path?: string; unknownPrefix?: boolean; external?: boolean; lib: string; raw: string };
+  http?: { method?: string; path?: string; unknownPrefix?: boolean; external?: boolean; lib: string; raw: string; wrapper?: boolean };
 }
 
 export interface FileEntry {

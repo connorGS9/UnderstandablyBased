@@ -160,6 +160,70 @@ test('tanstack router: createFileRoute', async () => {
   const e = p.entries.find((x) => x.kind === 'page')!;
   assert.equal(e.path, '/posts/:postId');
   assert.equal(e.handlerName, 'PostPage');
+  // `_auth` is a pathless layout: it groups routes without adding to the URL.
+  assert.ok(p.entries.some((x) => x.kind === 'page' && x.path === '/settings' && x.handlerName === 'Settings'), p.entries.map((x) => x.path).join(', '));
+});
+
+test('full stack: frontend HTTP calls link to backend routes', async () => {
+  const p = await open('fullstack-mini');
+  const callers = (path: string, method: string) => p.entries.find((e) => e.kind === 'http-route' && e.path === path && e.method === method)?.clientCallers?.map((c) => `${c.name} ${c.confidence}`).sort() ?? [];
+  // axios instance with baseURL, fetch with a constant + concatenation
+  assert.deepEqual(callers('/api/users', 'GET'), ['getUsers certain']);
+  assert.deepEqual(callers('/api/users', 'POST'), ['createUser certain']);
+  // template literal param, Angular HttpClient with environment.apiUrl (absolute localhost URL), concatenation
+  assert.deepEqual(callers('/api/users/:id', 'GET'), ['InvoiceService.userDetail certain', 'fetchUser likely', 'getUser certain']);
+  // hey-api generated SDK and Angular service
+  assert.deepEqual(callers('/api/invoices', 'GET'), ['InvoiceService.list certain', 'InvoicesService.listInvoices certain']);
+  // project wrappers recognized by shape; the base URL they add is unknown, so these are "likely"
+  assert.deepEqual(callers('/api/users/:id', 'DELETE'), ['deleteUser likely', 'removeUser likely']);
+  // a wrapper around someone else's API must not link, even when one of its paths looks like ours
+  assert.ok(!p.entries.some((e) => e.clientCallers?.some((c) => c.name === 'stripeUser')));
+  assert.ok([...p.sinks.nodes.values()].some((n) => n.label === 'api.weather.example.com'), 'real external APIs stay external');
+
+  // One flow from the page all the way to the table: page > component > handler > API function > route > handler > table
+  const page = p.entries.find((e) => e.kind === 'page' && e.path === '/users')!;
+  const flow = reach(p.flow(page.id, { depth: 10 }));
+  for (const expected of ['Users', 'onAdd', 'createUser', 'POST /api/users', 'insertUser', 'users', 'UserRow', 'onDelete', 'DELETE /api/users/:id', 'getUsers', 'GET /api/users']) assert.ok(flow.includes(expected), `${expected} missing from ${flow.join(' > ')}`);
+  // Purely visual components are left out of flows unless asked for
+  assert.ok(!flow.includes('Badge'));
+  assert.ok(reach(p.flow(page.id, { depth: 10, showTrivial: true })).includes('Badge'));
+
+  const detail = p.symbol([...p.graph.symbols.values()].find((s) => s.name === 'createUser')!.id)!;
+  assert.deepEqual(detail.routeCalls.map((r) => r.label), ['POST /api/users']);
+  assert.equal(p.summary.stats.linkedHttpCalls, 9);
+});
+
+test('sveltekit: +page/+server files, load runs first, template events and components', async () => {
+  const p = await open('sveltekit-mini');
+  const labels = p.entries.map((e) => `${e.kind} ${e.label}`).sort();
+  assert.deepEqual(labels, ['http-route GET /api/posts', 'http-route POST /api/posts', 'page /blog/:slug', 'page /settings']);
+  const blog = p.entries.find((e) => e.path === '/blog/:slug')!;
+  assert.deepEqual(blog.middleware?.map((m) => m.name), ['load (+page.server.ts)']);
+  const flow = reach(p.flow(blog.id, { depth: 8 }));
+  // onclick={like} in the template, <Comments /> rendered, its on:click handler fetching our own endpoint
+  for (const expected of ['load', '+page.svelte', 'like', 'Comments', 'GET /api/posts', 'posts']) assert.ok(flow.includes(expected), `${expected} missing from ${flow.join(' > ')}`);
+  const post = reach(p.flow('http-route:POST /api/posts', { depth: 6 }));
+  assert.ok(post.includes('savePost') && post.includes('posts'), post.join(' > '));
+});
+
+test('nuxt: pages/, server/api with method suffixes, useFetch and $fetch', async () => {
+  const p = await open('nuxt-mini');
+  const labels = p.entries.map((e) => `${e.kind} ${e.label}`).sort();
+  assert.deepEqual(labels, ['http-route DELETE /api/users/:id', 'http-route GET /api/users/:id', 'page /', 'page /users/:id']);
+  const flow = reach(p.flow('page: /users/:id', { depth: 6 }));
+  for (const expected of ['GET /api/users/:id', 'remove', 'DELETE /api/users/:id']) assert.ok(flow.includes(expected), `${expected} missing from ${flow.join(' > ')}`);
+  assert.ok(!flow.includes('UserCard'), 'purely visual components stay out of the flow');
+});
+
+test('remix: flat routes, loaders run first, actions and resource routes', async () => {
+  const p = await open('remix-mini');
+  const labels = p.entries.map((e) => `${e.kind} ${e.label}`).sort();
+  assert.deepEqual(labels, ['http-route GET /api/health', 'http-route POST /notes/:noteId', 'page /', 'page /login', 'page /notes/:noteId']);
+  const note = p.entries.find((e) => e.kind === 'page' && e.path === '/notes/:noteId')!;
+  assert.equal(note.handlerName, 'NotePage');
+  const flow = reach(p.flow(note.id, { depth: 4 }));
+  for (const expected of ['loader', 'getNote', 'notes', 'NotePage']) assert.ok(flow.includes(expected), `${expected} missing from ${flow.join(' > ')}`);
+  assert.ok(reach(p.flow('http-route:POST /notes/:noteId', { depth: 4 })).includes('deleteNote'));
 });
 
 test('settings: excludes, role corrections, pinned entry points, project kind', async () => {

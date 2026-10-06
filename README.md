@@ -12,7 +12,8 @@ Everything runs locally and offline. Nothing is sent anywhere.
 - **Explore**: pick a route, page, process, job or channel.
   - **Flow**: shows every function the request passes through, colored by role: middleware → controller → service → data access → table / external API / channel.
   - **Double-click** a box to read its code. Calls are underlined, so **click a call** to follow it into the next function. The breadcrumb trail records how you got there; click any step, or Home, to jump back. Back/Forward work like a browser (Alt+←/→ or mouse buttons).
-  - **Inspector**: explains what each piece of code does in plain language, why we think so, what it calls, what calls it, which routes reach it, and which data it touches.
+  - **Frontend to backend**: when a page's code sends an HTTP request that a route in the same repo answers, the flow carries on across the network (the purple "HTTP request" arrow): page → component → API function → route → controller → table. Purely visual components and display logic are left out; tick **Minor code** to see them.
+  - **Inspector**: explains what each piece of code does in plain language, why we think so, what it calls, what calls it, which routes reach it, and which data it touches. Routes list the frontend code that calls them, and API functions list the backend routes they hit.
 - **Diagrams**:
   - **Data flow**: an architecture view with columns from entry points to data stores. Click a box to highlight what it talks to.
   - **Database**: an ER diagram with primary keys, foreign keys and indexes, plus the code that reads or writes each table.
@@ -77,10 +78,10 @@ If `npm install` didn't download Electron (npm 11 blocks install scripts by defa
 | --- | --- |
 | Languages | TypeScript/JavaScript (incl. JSX/TSX), Java, Python, Go, C, C++, Rust, C# |
 | HTTP routes | Spring MVC, JAX-RS, NestJS (and `@RestController`/`@JsonController` styles), ASP.NET Core (attributes and minimal APIs), Express/Koa/Fastify/Hono (including nested routers, `app.use` prefixes and middleware), FastAPI/Flask (routers, blueprints, prefixes from settings), Django `urls.py` (`include()`, class-based views), Gin/Echo/Chi/Fiber/net/http (groups), Axum |
-| Pages | Next.js app and pages routers, React Router (`<Route>` and route objects), Vue Router, Angular Router (including nested `loadComponent`), TanStack Router (`createFileRoute`). Vue and Svelte single-file components are analyzed through their `<script>` blocks. |
+| Pages & file routes | Next.js app and pages routers, SvelteKit (`+page.svelte` with `load`, `+server.ts`, form actions), Nuxt (`pages/`, `server/api/*.get.ts`), Remix / React Router v7 (flat `app/routes`, `routes.ts` config, loaders and actions), React Router (`<Route>` and route objects), Vue Router, Angular Router (including nested `loadComponent`), TanStack Router (`createFileRoute`, pathless layouts). Vue and Svelte components are analyzed through their `<script>` blocks, plus the components and event handlers used in their templates. |
 | Processes & jobs | `main()` in every language, Python `__main__`, Node entry scripts, `@Scheduled`, Celery tasks, Kafka/Rabbit/JMS listeners |
 | Databases | SQL DDL (`CREATE TABLE`/`INDEX`, `ALTER TABLE`), Prisma, JPA/Hibernate, TypeORM, Django models, SQLAlchemy/SQLModel. Table usage is detected from SQL in strings, ORM model calls, Prisma clients and typed repositories |
-| External calls | `fetch`, axios, requests/httpx, RestTemplate/WebClient, HttpClient, Go `net/http`, libcurl |
+| HTTP clients (linked to routes in the same repo) | `fetch`, axios (incl. `axios.create({ baseURL })` instances), Angular `HttpClient`, Vue `$http`, Nuxt `$fetch`/`useFetch`, SWR, ky, ofetch, jQuery, openapi-fetch and generated SDKs (hey-api/openapi-ts, openapi-typescript-codegen), project wrappers like `apiRequest('GET', '/users')`, requests/httpx, RestTemplate/WebClient, .NET `HttpClient`, Go `net/http`, libcurl. URLs are read from template strings, concatenation, constants and `environment` config. Calls reach their backend function through React hooks, Vue composables and Pinia stores |
 | IPC & messaging | POSIX/Boost shared memory, message queues, named pipes, ZeroMQ/nanomsg/Aeron endpoints, Kafka/RabbitMQ/Redis/NATS topics |
 
 ## How it works
@@ -108,7 +109,6 @@ Very large repositories (over 4,000 source files) skip test files to stay fast. 
 - Send real requests to a route from the app (curl-style) and see the response next to the flow.
 - A UI inspector for frontends: point at part of the running app and see the code that renders it.
 - Open a Git URL directly (clone into a cache).
-- Link frontend API calls to the backend routes they hit, so a flow can continue across the network.
 - Parallel parsing for very large repositories.
 - More languages and frameworks: Kotlin, Ruby/Rails, PHP/Laravel, Spring WebFlux functional routes.
 - Monorepo scoping: focus the map on one package or service at a time.

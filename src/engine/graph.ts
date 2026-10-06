@@ -177,12 +177,17 @@ export class CodeGraph {
         const r = this.tryJsFile(posix.normalize(posix.join(cfg.baseUrl, source)));
         if (r) return [r];
       }
-      // Common unconfigured aliases: "@/x" and "~/x" -> src/x
-      const m = /^[@~]\/(.*)$/.exec(source);
+      // Common unconfigured aliases, resolved from the importing file's project (monorepos have several):
+      // "@/x", "~/x" (Vite, Vue, Nuxt) -> src/x, x or app/x; "~~/x", "@@/x" (Nuxt root); "$lib/x" (SvelteKit) -> src/lib/x
+      const m = /^(\$lib|~~|@@|[@~])\/(.*)$/.exec(source);
       if (m) {
-        for (const base of ['src', '', 'app']) {
-          const r = this.tryJsFile(posix.join(base, m[1]));
-          if (r) return [r];
+        const bases = m[1] === '$lib' ? ['src/lib'] : m[1].length === 2 ? [''] : ['src', '', 'app'];
+        for (let dir = posix.dirname(fromFile); ; dir = posix.dirname(dir)) {
+          for (const base of bases) {
+            const r = this.tryJsFile(posix.join(dir === '.' ? '' : dir, base, m[2]));
+            if (r) return [r];
+          }
+          if (dir === '.' || dir === '/' || dir === '') break;
         }
       }
       return [];
@@ -444,6 +449,13 @@ export class CodeGraph {
     const imports = this.importsByFile.get(file);
     const top = this.topLevelByFile.get(file);
 
+    if (!site.receiver && name === 'import' && site.args[0]?.kind === 'string' && site.args[0].value && (lang === 'javascript' || lang === 'typescript' || lang === 'tsx')) {
+      for (const r of this.resolveModule(file, site.args[0].value, lang)) {
+        const def = this.lookupExport(r, 'default')?.sym;
+        if (def) return { targets: [def], confidence: 'certain', reason: `loaded lazily from ${site.args[0].value}` };
+      }
+      return undefined;
+    }
     if (!site.receiver) {
       // 1. sibling method via implicit this
       if (scope?.container && IMPLICIT_THIS_LANGS.has(lang)) {
@@ -453,6 +465,12 @@ export class CodeGraph {
       // 2. same file
       const local = top?.get(name);
       if (local && local.id !== site.from) return { targets: [this.ctorOrClass(local)], confidence: 'certain', reason: 'defined in the same file' };
+      // 2b. a function destructured from a hook/composable/store: const { fetchUsers } = useUsers()
+      const dv = this.varsByScope.get(site.from)?.get(name) ?? this.varsByScope.get(`file:${file}`)?.get(name);
+      if (dv?.member && dv.call) {
+        const m = this.factoryMember(dv.call.callee, dv.member, file, site.from, lang);
+        if (m) return { targets: [m], confidence: 'certain', reason: `${dv.member} returned by ${dv.call.callee}()` };
+      }
       // 3. imported binding
       const imp = imports?.get(name);
       if (imp) {
@@ -506,6 +524,15 @@ export class CodeGraph {
     if (type) {
       const r = this.memberOnType(type, name, file, site.args.length);
       if (r) return r;
+    }
+
+    // a2) the receiver came from a factory: const store = useUserStore(); store.fetchUsers()
+    if (/^[\w$]+$/.test(recv) && (lang === 'javascript' || lang === 'typescript' || lang === 'tsx')) {
+      const v = this.varsByScope.get(site.from)?.get(recv) ?? this.varsByScope.get(`file:${file}`)?.get(recv);
+      if (v?.call && !v.call.receiver && !v.member && /^(use|create|make|get)[A-Z]|Store$|Service$/.test(v.call.callee)) {
+        const m = this.factoryMember(v.call.callee, name, file, site.from, lang);
+        if (m) return { targets: [m], confidence: 'certain', reason: `${name} returned by ${v.call.callee}()` };
+      }
     }
 
     // b) module / namespace receiver (import * as svc / python module / go package / C++ namespace)
@@ -591,6 +618,47 @@ export class CodeGraph {
       // Known project type but the method is inherited from a framework (e.g. JpaRepository.findAll)
       const t = this.pickClosest(typeSyms, file)!;
       return { targets: [t], confidence: 'likely', reason: `${name}() is inherited by ${type} from ${t.supers?.join(', ') || 'a library'}` };
+    }
+    return undefined;
+  }
+
+  private factoryDepth = 0;
+  private nestedByParent?: Map<string, Map<string, CodeSymbol>>;
+  /**
+   * A function named `member` defined inside the factory `factoryName` resolves to: a composable/hook
+   * (`function useUsers() { async function fetchUsers() {…} return { fetchUsers } }`) or a Pinia setup store
+   * (`export const useUserStore = defineStore('users', () => { … })`).
+   */
+  factoryMember(factoryName: string, member: string, file: string, from: string, lang: Lang): CodeSymbol | undefined {
+    if (!this.nestedByParent) {
+      this.nestedByParent = new Map();
+      for (const s of this.symbols.values()) {
+        if (!s.parentFn) continue;
+        const m = this.nestedByParent.get(s.parentFn) ?? new Map<string, CodeSymbol>();
+        if (!m.has(s.name)) m.set(s.name, s);
+        this.nestedByParent.set(s.parentFn, m);
+      }
+    }
+    if (this.factoryDepth > 3) return undefined;
+    const setups: CodeSymbol[] = [];
+    this.factoryDepth++;
+    const r = this.resolveCall({ from, callee: factoryName, args: [], range: { sl: 0, sc: 0, el: 0, ec: 0 } }, file, lang);
+    this.factoryDepth--;
+    if (r?.confidence !== 'guess') setups.push(...(r?.targets ?? []));
+    // The factory may be a variable holding a wrapped setup function: defineStore('id', () => {…}), createSharedComposable(() => {…})
+    const fromVar = (vf: string, varName: string) => {
+      const v = this.varsByScope.get(`file:${vf}`)?.get(varName);
+      for (const a of v?.call?.args ?? []) if (a.kind === 'func' && a.symbolId && this.symbols.has(a.symbolId)) setups.push(this.symbols.get(a.symbolId)!);
+    };
+    fromVar(file, factoryName);
+    const imp = this.importsByFile.get(file)?.get(factoryName);
+    for (const rf of imp?.resolved ?? []) {
+      const ex = this.lookupExport(rf, imp!.imported === '*' ? 'default' : imp!.imported);
+      if (ex?.varName) fromVar(ex.file, ex.varName);
+    }
+    for (const s of setups) {
+      const m = this.nestedByParent.get(s.id)?.get(member);
+      if (m) return m;
     }
     return undefined;
   }

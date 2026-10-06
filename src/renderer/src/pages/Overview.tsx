@@ -23,6 +23,7 @@ export function Overview() {
   const processes = entries.filter((e) => e.kind === 'process');
   const channels = entries.filter((e) => e.kind === 'channel');
   const jobs = entries.filter((e) => e.kind === 'job');
+  const routesWithCallers = summary.entries.filter((e) => e.clientCallers?.length).length;
   const pct = Math.round((100 * stats.resolvedCalls) / Math.max(1, stats.calls));
 
   // Greet every newly opened codebase with what it is and where to start.
@@ -145,6 +146,11 @@ export function Overview() {
             <div className="faint" style={{ fontSize: 12, marginTop: 12 }} title="Calls into libraries and the standard library are not linked; this counts links between functions in this project.">
               {stats.resolvedCalls.toLocaleString()} of {stats.calls.toLocaleString()} calls ({pct}%) linked to code in this project. The rest go into libraries.
             </div>
+            {!!stats.linkedHttpCalls && (
+              <div className="faint" style={{ fontSize: 12, marginTop: 6 }} title="Requests whose URL and method match a route defined in this project, so flows continue from the frontend into the backend.">
+                <span style={{ color: 'var(--role-route)' }}>⇢</span> {stats.linkedHttpCalls.toLocaleString()} HTTP {stats.linkedHttpCalls === 1 ? 'request' : 'requests'} from the frontend (or other services) linked to {routesWithCallers} {routesWithCallers === 1 ? 'route' : 'routes'} in this project.
+              </div>
+            )}
           </section>
 
           <section className="card">

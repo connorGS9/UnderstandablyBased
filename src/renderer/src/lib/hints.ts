@@ -76,17 +76,17 @@ export const HINTS: Record<Exclude<HintId, 'project-intro'>, HintContent> = {
   },
   'diagrams-dataflow': {
     title: 'Data flow: the architecture at a glance',
-    body: 'Columns go from entry points on the left to data stores on the right. Thicker arrows mean more calls. Click a box to highlight what it talks to; use the checkboxes at the bottom to hide layers.',
+    body: 'Columns go from entry points on the left to data stores on the right. Thicker arrows mean more calls. Hover a box to light up what it talks to; click to keep it lit, widen it to 2–3 hops or Isolate it into a small diagram of its own. Press / to find a box, Esc to step back.',
     target: '[data-hint="diagram"]',
   },
   'diagrams-database': {
     title: 'Database: tables, keys and indexes',
-    body: 'PK marks primary keys, FK foreign keys (the arrow points to the referenced table) and IX indexed columns. Click a table to see its indexes and every function that reads or writes it.',
+    body: 'PK marks primary keys, FK foreign keys (the arrow points to the referenced table) and IX indexed columns. Big schemas are split into framed groups of related tables. Click a table to light up its relations, see its indexes and every function that uses it; Isolate redraws just that part. Press / to find a table.',
     target: '[data-hint="diagram"]',
   },
   'diagrams-routes': {
     title: 'Route map: every URL',
-    body: 'Each box is one segment of a URL path, with the HTTP methods answered there. Click a method badge to open that route in Explore.',
+    body: 'Each box is one segment of a URL path, with the HTTP methods answered there. Click a method badge to open that route in Explore. Big apps start collapsed: +N opens a branch. Press / to find a route.',
     target: '[data-hint="diagram"]',
   },
   'diagrams-modules': {

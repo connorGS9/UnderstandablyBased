@@ -13,7 +13,8 @@
     "postinstall": "install-electron || true",
     "dist": "electron-vite build && electron-builder",
     "test": "node --import tsx --test test/*.test.ts",
-    "dist:dir": "electron-vite build && electron-builder --dir"
+    "dist:dir": "electron-vite build && electron-builder --dir",
+    "gen:large": "tsx scripts/gen-large-fixture.ts"
   },
   "license": "MIT",
   "type": "module",

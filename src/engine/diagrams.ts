@@ -35,7 +35,23 @@ function dataflow(p: Project): Diagrams['dataflow'] {
   // When grouping by directory, cut paths at a depth that keeps the number of boxes readable.
   let dirDepth = 99;
   const dirOf = (file: string) => posix.dirname(file).split('/').slice(0, dirDepth).join('/');
+  // Many tables would fill the right-hand column with hundreds of boxes: group them by name prefix (billing_*).
+  const tableGroup = new Map<string, string>();
+  const tableIds = [...p.sinks.nodes.values()].filter((n) => n.kind === 'table').map((n) => n.id);
+  if (tableIds.length > 30) {
+    const prefixOf = (id: string) => /^([a-z0-9]+)[_.]/i.exec(p.sinks.nodes.get(id)!.label)?.[1]?.toLowerCase();
+    const counts = new Map<string, number>();
+    for (const id of tableIds) {
+      const pre = prefixOf(id);
+      if (pre) counts.set(pre, (counts.get(pre) ?? 0) + 1);
+    }
+    for (const id of tableIds) {
+      const pre = prefixOf(id);
+      tableGroup.set(id, pre && counts.get(pre)! >= 3 ? `tables:${pre}` : 'tables:(other)');
+    }
+  }
   const compOfSymbol = (id: string, byDir: boolean): string | undefined => {
+    if (tableGroup.has(id)) return tableGroup.get(id);
     // Frontend code calling a route of this project over HTTP points at that route's group.
     const entry = p.entryById.get(id);
     if (entry) return entry.handlerId && entry.kind !== 'channel' ? `entries:${entry.kind}:${entry.group}` : undefined;
@@ -55,6 +71,13 @@ function dataflow(p: Project): Diagrams['dataflow'] {
       let n = nodes.get(cid);
       if (n) return n;
       if (cid.startsWith('entries:')) return undefined; // entry groups are created up front
+      if (cid.startsWith('tables:')) {
+        const members = [...tableGroup].filter(([, g]) => g === cid).map(([t]) => p.sinks.nodes.get(t)!.label);
+        const pre = cid.slice(7);
+        n = { id: cid, label: pre === '(other)' ? 'other tables' : `${pre}_*`, sublabel: `${members.length} tables: ${members.slice(0, 4).join(', ')}${members.length > 4 ? '…' : ''}`, role: 'table', roles: [], size: members.length };
+        nodes.set(cid, n);
+        return n;
+      }
       if (p.sinks.nodes.has(cid)) {
         const sk = p.sinks.nodes.get(cid)!;
         n = { id: cid, label: sk.label, sublabel: sk.detail, role: sk.kind === 'table' ? 'table' : sk.kind === 'channel' ? 'channel' : 'external', roles: [], target: sk.kind === 'channel' ? `channel:${cid}` : undefined };

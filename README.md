@@ -24,6 +24,7 @@ Everything runs locally and offline. Nothing is sent anywhere.
   - **Database**: an ER diagram with primary keys, foreign keys and indexes, plus the code that reads or writes each table.
   - **Route map**: every URL as a tree of path segments.
   - **Modules**: which folders depend on which.
+  - **Big diagrams stay readable**: lines are routed through the gaps between boxes instead of across them. Hover a box to light up its connections, click to keep them lit (1–3 hops), and **Isolate** to redraw just that neighbourhood. Press **/** to find a box, **Esc** to step back. Large schemas are split into framed groups of related tables, with hub tables like `users` marked instead of drawn to every table. The route map collapses big apps into sections you can open.
 - **Search** (Ctrl/⌘+K): routes, functions, classes, files and tables.
 - **Stays current**: when you edit files the analysis refreshes on its own; only changed files are re-read. The ⟳ button re-analyzes on demand.
 - **Adjustable**: the panels resize (drag their borders), and light and dark themes are both available.
